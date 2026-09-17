@@ -44,14 +44,14 @@ prepare_hrd_exp_sample_data <- function() {
 
 # --- plot builders (built once; renderPlot just draws) -----------------------
 
-.theme_panel <- function() {
-  theme_bw(base_size = 11) +
+.theme_panel <- function(base_size = 13) {
+  theme_bw(base_size = base_size) +
     theme(
       plot.title = element_blank(),
-      plot.margin = margin(2, 6, 2, 4),
+      plot.margin = margin(8, 10, 8, 8),
       panel.grid.minor = element_blank(),
-      axis.title = element_text(size = 10),
-      axis.text = element_text(size = 8)
+      axis.title = element_text(size = base_size),
+      axis.text = element_text(size = base_size - 2)
     )
 }
 
@@ -74,10 +74,10 @@ build_genome_plot <- function(sample_data) {
     ylab = "HRDsum"
   ) +
     coord_flip() +
-    .theme_panel() +
+    .theme_panel(14) +
     theme(
       legend.position = "none",
-      axis.text.y = element_text(size = 7.5)
+      axis.text.y = element_text(size = 11)
     )
 }
 
@@ -106,19 +106,18 @@ build_compare_plot <- function(sample_data) {
       intercept = stats::coef(fit)[[1]],
       slope = stats::coef(fit)[[2]],
       colour = "#1F77B4",
-      linewidth = 1.1
+      linewidth = 1.2
     ) +
     coord_cartesian(xlim = lim, ylim = lim) +
-    .theme_panel() +
+    .theme_panel(14) +
     theme(
       legend.position = "right",
       legend.title = element_blank(),
-      legend.text = element_text(size = 5.5),
-      legend.key.size = grid::unit(0.28, "cm"),
-      legend.margin = margin(0, 0, 0, 0),
-      legend.spacing.y = grid::unit(0.05, "cm")
+      legend.text = element_text(size = 9),
+      legend.key.size = grid::unit(0.4, "cm"),
+      legend.spacing.y = grid::unit(0.08, "cm")
     ) +
-    guides(colour = guide_legend(ncol = 2, override.aes = list(size = 1.8, alpha = 1)))
+    guides(colour = guide_legend(ncol = 2, override.aes = list(size = 2.2, alpha = 1)))
 }
 
 build_qc_plot <- function(sample_data) {
@@ -136,111 +135,106 @@ build_qc_plot <- function(sample_data) {
     ylab = "exp_HRD",
     opacity = 0.55
   ) +
-    .theme_panel()
+    .theme_panel(14)
 }
 
 # --- shiny module ------------------------------------------------------------
 
 hrdExpUI <- function(id) {
   ns <- NS(id)
-  plot_h <- "calc(100vh - 78px)"
 
   tagList(
     tags$style(HTML(sprintf("
       #%s {
         height: 100vh;
         overflow: hidden;
-        padding: 6px 10px 4px 10px;
+        padding: 8px 12px;
         box-sizing: border-box;
-        background: #fafafa;
+        background: #f7f7f7;
       }
       #%s .hrd-bar {
         display: flex;
         align-items: center;
-        gap: 16px;
-        height: 28px;
-        margin-bottom: 4px;
+        gap: 18px;
+        height: 32px;
+        margin-bottom: 6px;
       }
       #%s .hrd-bar .shiny-input-container { margin: 0; padding: 0; }
-      #%s .hrd-bar label { font-size: 12px; margin: 0; font-weight: 500; }
-      #%s .hrd-note { font-size: 11px; color: #666; margin: 0; }
-      #%s .hrd-row {
-        display: flex;
-        gap: 8px;
-        height: %s;
+      #%s .hrd-bar label { font-size: 13px; margin: 0; font-weight: 500; }
+      #%s .hrd-note { font-size: 12px; color: #666; margin: 0; }
+      #%s .tabbable, #%s .tab-content, #%s .tab-pane {
+        height: calc(100vh - 52px);
       }
-      #%s .hrd-col {
-        flex: 1 1 0;
-        min-width: 0;
+      #%s .tab-content {
+        overflow: hidden;
         background: #fff;
-        border: 1px solid #e5e5e5;
-        border-radius: 4px;
-        padding: 4px 6px 2px 6px;
-        display: flex;
-        flex-direction: column;
+        border: 1px solid #ddd;
+        border-top: none;
+        border-radius: 0 0 4px 4px;
+        padding: 8px 10px;
+        box-sizing: border-box;
       }
-      #%s .hrd-col h5 {
-        margin: 0 0 2px 0;
-        font-size: 12px;
-        font-weight: 600;
-        color: #222;
-        flex: 0 0 auto;
+      #%s .nav-tabs { margin-bottom: 0; }
+      #%s .shiny-plot-output {
+        height: calc(100vh - 110px) !important;
       }
-      #%s .hrd-col .shiny-plot-output { flex: 1 1 auto; }
     ", ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
-       ns("wrap"), plot_h, ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap")))),
+       ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap")))),
     div(
       id = ns("wrap"),
       div(
         class = "hrd-bar",
-        checkboxInput(ns("show_genome"), "Show genome-HRD panel", value = TRUE),
+        checkboxInput(ns("show_genome"), "Show genome-HRD page", value = TRUE),
         span(class = "hrd-note", "exp_HRD is placeholder until classifier output arrives")
       ),
-      div(
-        class = "hrd-row",
-        conditionalPanel(
-          condition = "input.show_genome",
-          ns = ns,
-          div(
-            class = "hrd-col",
-            h5("Genome HRD"),
-            plotOutput(ns("genome"), height = "100%")
-          )
-        ),
-        div(
-          class = "hrd-col",
-          h5("exp-HRD vs genome-HRD"),
-          plotOutput(ns("compare"), height = "100%")
-        ),
-        div(
-          class = "hrd-col",
-          h5("QC — purity vs exp-HRD"),
-          plotOutput(ns("qc"), height = "100%")
-        )
-      )
+      uiOutput(ns("pages"))
     )
   )
 }
 
 hrdExpServer <- function(id, sample_data) {
   moduleServer(id, function(input, output, session) {
-    # Build once — avoids re-fitting / re-rasterizing on every invalidation
+    ns <- session$ns
+
     genome_gg <- build_genome_plot(sample_data)
     compare_gg <- build_compare_plot(sample_data)
     qc_gg <- build_qc_plot(sample_data)
 
+    output$pages <- renderUI({
+      tabs <- list(
+        tabPanel(
+          "Comparison",
+          plotOutput(ns("compare"), height = "100%")
+        ),
+        tabPanel(
+          "QC",
+          plotOutput(ns("qc"), height = "100%")
+        )
+      )
+      if (isTRUE(input$show_genome)) {
+        tabs <- c(
+          list(tabPanel(
+            "Genome HRD",
+            plotOutput(ns("genome"), height = "100%")
+          )),
+          tabs
+        )
+      }
+      do.call(tabsetPanel, c(tabs, list(id = ns("page"), type = "tabs")))
+    })
+
     output$genome <- renderPlot({
       req(isTRUE(input$show_genome))
       genome_gg
-    }, res = 110)
+    }, res = 120)
 
     output$compare <- renderPlot({
       compare_gg
-    }, res = 110)
+    }, res = 120)
 
     output$qc <- renderPlot({
       qc_gg
-    }, res = 110)
+    }, res = 120)
   })
 }
 
