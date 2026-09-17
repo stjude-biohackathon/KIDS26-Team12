@@ -18,13 +18,22 @@
 library(shiny)
 library(data.table)
 library(dittoViz)
-library(plotly)
+library(ggplot2)
 
 prepare_hrd_exp_sample_data <- function() {
   source("R/adapters/adapt_ddr_scores.R", local = TRUE)
 
-  ddr_data <- adapt_ddr_scores()
-  sample_data <- unique(ddr_data[, .(sample_id, cancer_type, HRDsum, purity, ploidy)])
+  # Sample-level fields only (Suzy's unique(...)). Prefer the samples table
+  # directly so we do not melt the probe x sample beta matrix on every launch;
+  # those columns are what adapt_ddr_scores() joins from master_samples.tsv.
+  samples_path <- file.path("front_end_data", "ddr_scars", "master_samples.tsv")
+  if (!file.exists(samples_path)) {
+    ddr_data <- adapt_ddr_scores()
+    sample_data <- unique(ddr_data[, .(sample_id, cancer_type, HRDsum, purity, ploidy)])
+  } else {
+    samples <- fread(samples_path)
+    sample_data <- unique(samples[, .(sample_id, cancer_type, HRDsum, purity, ploidy)])
+  }
 
   # placeholder exp-HRD score — REMOVE once real classifier output arrives
   set.seed(2)
@@ -33,138 +42,214 @@ prepare_hrd_exp_sample_data <- function() {
   as.data.frame(sample_data)
 }
 
-# Fast plotly wrapper: dittoViz ggplot -> plotly, no hover lag
-.to_plotly <- function(p) {
-  ggplotly(p, tooltip = "none") |>
-    layout(margin = list(l = 40, r = 10, t = 30, b = 40)) |>
-    config(displayModeBar = FALSE)
+# --- plot builders (built once; renderPlot just draws) -----------------------
+
+.theme_panel <- function() {
+  theme_bw(base_size = 11) +
+    theme(
+      plot.title = element_blank(),
+      plot.margin = margin(2, 6, 2, 4),
+      panel.grid.minor = element_blank(),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 8)
+    )
 }
+
+build_genome_plot <- function(sample_data) {
+  med <- tapply(sample_data$HRDsum, sample_data$cancer_type, median, na.rm = TRUE)
+  ord <- names(sort(med, decreasing = FALSE))
+  d <- sample_data
+  d$cancer_type <- factor(d$cancer_type, levels = ord)
+
+  dittoViz::yPlot(
+    d,
+    var = "HRDsum",
+    group.by = "cancer_type",
+    color.by = "cancer_type",
+    plots = "boxplot",
+    do.hover = FALSE,
+    legend.show = FALSE,
+    main = NULL,
+    xlab = NULL,
+    ylab = "HRDsum"
+  ) +
+    coord_flip() +
+    .theme_panel() +
+    theme(
+      legend.position = "none",
+      axis.text.y = element_text(size = 7.5)
+    )
+}
+
+build_compare_plot <- function(sample_data) {
+  lim <- range(c(sample_data$HRDsum, sample_data$exp_HRD), finite = TRUE)
+  fit <- stats::lm(exp_HRD ~ HRDsum, data = sample_data)
+
+  dittoViz::scatterPlot(
+    sample_data,
+    x.by = "HRDsum",
+    y.by = "exp_HRD",
+    color.by = "cancer_type",
+    # dittoViz: add.abline is the intercept (0 => y = x)
+    add.abline = 0,
+    abline.slope = 1,
+    abline.linetype = "dashed",
+    abline.color = "grey40",
+    do.hover = FALSE,
+    do.raster = TRUE,
+    legend.show = TRUE,
+    main = NULL,
+    xlab = "HRDsum (genome)",
+    ylab = "exp_HRD"
+  ) +
+    geom_abline(
+      intercept = stats::coef(fit)[[1]],
+      slope = stats::coef(fit)[[2]],
+      colour = "#1F77B4",
+      linewidth = 1.1
+    ) +
+    coord_cartesian(xlim = lim, ylim = lim) +
+    .theme_panel() +
+    theme(
+      legend.position = "right",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 5.5),
+      legend.key.size = grid::unit(0.28, "cm"),
+      legend.margin = margin(0, 0, 0, 0),
+      legend.spacing.y = grid::unit(0.05, "cm")
+    ) +
+    guides(colour = guide_legend(ncol = 2, override.aes = list(size = 1.8, alpha = 1)))
+}
+
+build_qc_plot <- function(sample_data) {
+  d <- sample_data[is.finite(sample_data$purity) & is.finite(sample_data$exp_HRD), , drop = FALSE]
+
+  dittoViz::scatterPlot(
+    d,
+    x.by = "purity",
+    y.by = "exp_HRD",
+    do.hover = FALSE,
+    do.raster = TRUE,
+    legend.show = FALSE,
+    main = NULL,
+    xlab = "purity",
+    ylab = "exp_HRD",
+    opacity = 0.55
+  ) +
+    .theme_panel()
+}
+
+# --- shiny module ------------------------------------------------------------
 
 hrdExpUI <- function(id) {
   ns <- NS(id)
+  plot_h <- "calc(100vh - 78px)"
 
   tagList(
     tags$style(HTML(sprintf("
       #%s {
         height: 100vh;
         overflow: hidden;
-        padding: 8px 12px;
+        padding: 6px 10px 4px 10px;
         box-sizing: border-box;
+        background: #fafafa;
       }
-      #%s .hrd-plots {
-        height: calc(100vh - 48px);
+      #%s .hrd-bar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        height: 28px;
+        margin-bottom: 4px;
       }
-      #%s .hrd-plots > .row, #%s .hrd-plots .col {
-        height: 100%%;
+      #%s .hrd-bar .shiny-input-container { margin: 0; padding: 0; }
+      #%s .hrd-bar label { font-size: 12px; margin: 0; font-weight: 500; }
+      #%s .hrd-note { font-size: 11px; color: #666; margin: 0; }
+      #%s .hrd-row {
+        display: flex;
+        gap: 8px;
+        height: %s;
       }
-      #%s h5 { margin: 0 0 4px 0; font-size: 13px; }
-    ", ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap")))),
+      #%s .hrd-col {
+        flex: 1 1 0;
+        min-width: 0;
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 4px;
+        padding: 4px 6px 2px 6px;
+        display: flex;
+        flex-direction: column;
+      }
+      #%s .hrd-col h5 {
+        margin: 0 0 2px 0;
+        font-size: 12px;
+        font-weight: 600;
+        color: #222;
+        flex: 0 0 auto;
+      }
+      #%s .hrd-col .shiny-plot-output { flex: 1 1 auto; }
+    ", ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
+       ns("wrap"), plot_h, ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap")))),
     div(
       id = ns("wrap"),
-      checkboxInput(ns("show_genome"), "Show genome-HRD panel", value = TRUE),
-      uiOutput(ns("plots"))
+      div(
+        class = "hrd-bar",
+        checkboxInput(ns("show_genome"), "Show genome-HRD panel", value = TRUE),
+        span(class = "hrd-note", "exp_HRD is placeholder until classifier output arrives")
+      ),
+      div(
+        class = "hrd-row",
+        conditionalPanel(
+          condition = "input.show_genome",
+          ns = ns,
+          div(
+            class = "hrd-col",
+            h5("Genome HRD"),
+            plotOutput(ns("genome"), height = "100%")
+          )
+        ),
+        div(
+          class = "hrd-col",
+          h5("exp-HRD vs genome-HRD"),
+          plotOutput(ns("compare"), height = "100%")
+        ),
+        div(
+          class = "hrd-col",
+          h5("QC — purity vs exp-HRD"),
+          plotOutput(ns("qc"), height = "100%")
+        )
+      )
     )
   )
 }
 
 hrdExpServer <- function(id, sample_data) {
   moduleServer(id, function(input, output, session) {
-    ns <- session$ns
+    # Build once — avoids re-fitting / re-rasterizing on every invalidation
+    genome_gg <- build_genome_plot(sample_data)
+    compare_gg <- build_compare_plot(sample_data)
+    qc_gg <- build_qc_plot(sample_data)
 
-    output$plots <- renderUI({
-      show <- isTRUE(input$show_genome)
-      w <- if (show) 4 else 6
-
-      cols <- list()
-      if (show) {
-        cols <- c(cols, list(column(
-          w,
-          h5("Genome HRD"),
-          plotlyOutput(ns("genome"), height = "calc(100vh - 72px)")
-        )))
-      }
-      cols <- c(cols, list(
-        column(
-          w,
-          h5("exp-HRD vs genome-HRD"),
-          plotlyOutput(ns("compare"), height = "calc(100vh - 72px)")
-        ),
-        column(
-          w,
-          h5("QC — purity vs exp-HRD"),
-          plotlyOutput(ns("qc"), height = "calc(100vh - 72px)")
-        )
-      ))
-
-      div(class = "hrd-plots", do.call(fluidRow, cols))
-    })
-
-    output$genome <- renderPlotly({
+    output$genome <- renderPlot({
       req(isTRUE(input$show_genome))
-      p <- dittoViz::yPlot(
-        sample_data,
-        var = "HRDsum",
-        group.by = "cancer_type",
-        color.by = "cancer_type",
-        plots = "boxplot",
-        do.hover = FALSE,
-        legend.show = FALSE,
-        main = NULL,
-        xlab = NULL
-      )
-      .to_plotly(p)
-    })
+      genome_gg
+    }, res = 110)
 
-    output$compare <- renderPlotly({
-      p <- dittoViz::scatterPlot(
-        sample_data,
-        x.by = "HRDsum",
-        y.by = "exp_HRD",
-        color.by = "cancer_type",
-        # dittoViz: add.abline is the intercept (0 => y = x)
-        add.abline = 0,
-        abline.slope = 1,
-        abline.linetype = "dashed",
-        do.hover = FALSE,
-        do.raster = TRUE,
-        legend.show = FALSE,
-        main = NULL
-      )
-      fit <- stats::lm(exp_HRD ~ HRDsum, data = sample_data)
-      p <- p + ggplot2::geom_abline(
-        intercept = stats::coef(fit)[[1]],
-        slope = stats::coef(fit)[[2]],
-        colour = "#1F77B4",
-        linewidth = 1
-      )
-      .to_plotly(p)
-    })
+    output$compare <- renderPlot({
+      compare_gg
+    }, res = 110)
 
-    output$qc <- renderPlotly({
-      p <- dittoViz::scatterPlot(
-        sample_data,
-        x.by = "purity",
-        y.by = "exp_HRD",
-        do.hover = FALSE,
-        do.raster = TRUE,
-        legend.show = FALSE,
-        main = NULL
-      )
-      .to_plotly(p)
-    })
+    output$qc <- renderPlot({
+      qc_gg
+    }, res = 110)
   })
 }
 
 hrd_exp_demo_app <- function() {
   sample_data <- prepare_hrd_exp_sample_data()
   shinyApp(
-    ui = fluidPage(
-      theme = NULL,
-      hrdExpUI("tab3")
-    ),
+    ui = fluidPage(hrdExpUI("tab3")),
     server = function(input, output, session) {
       hrdExpServer("tab3", sample_data)
-    },
-    options = list(launch.browser = TRUE)
+    }
   )
 }
