@@ -83,7 +83,9 @@ if (!requireNamespace("data.table",quietly=TRUE)) stop("Install dependencies wit
 # check.names=FALSE preserves TCGA barcodes verbatim; R would otherwise mangle
 # the hyphens in "TCGA-A2-A0SV-01A-..." into dots.
 # MEMORY: this is the ~21 GB allocation described in the header.
-beta <- data.table::fread(args[1],data.table=FALSE,check.names=FALSE)
+# Load the allowlist of probes to subset during read (memory optimization)
+allowlist_probes <- c("probe_id", readLines("config/shared_autosomal_probes.txt"))
+beta <- data.table::fread(args[1],data.table=FALSE,check.names=FALSE,select=allowlist_probes)
 if (anyDuplicated(beta[[1]])) stop("Duplicate probe IDs")
 
 # Transpose to the samples-in-rows orientation that R/model.R expects, then
@@ -93,6 +95,7 @@ if (anyDuplicated(beta[[1]])) stop("Duplicate probe IDs")
 # ("NAs introduced by coercion") rather than an error, and those NAs would then
 # flow onward looking like legitimate missing data.
 x <- t(as.matrix(beta[,-1,drop=FALSE])); storage.mode(x)<-"double";colnames(x)<-beta[[1]]
+rm(beta); gc()
 
 # Beta values are methylation proportions and must lie in [0,1]. The is.finite()
 # conjunct means NA is tolerated (handled later by imputation) but an out-of-range
