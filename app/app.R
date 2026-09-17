@@ -81,24 +81,97 @@ if(!all(required %in% names(results)))stop("Demo table missing fields; see docs/
 if(anyDuplicated(results$sample_id))stop("Duplicate demo IDs")
 
 # --- UI ---------------------------------------------------------------------
-# Layout order mirrors the interpretive hierarchy: provenance first (what am I
-# even looking at?), then the point estimate, then its uncertainty, then the
-# reference value, then QC, then cohort-level context.
-ui <- fluidPage(titlePanel("KIDS26: methylation prediction of genomic-scar burden"),
+ui <- fluidPage(
+  titlePanel("KIDS26: methylation prediction of genomic-scar burden"),
+  
   p("Research demonstration. Predicted reference HRDsum is not a treatment recommendation."),
-  selectInput("sample","Approved sample",choices=results$sample_id),
-  verbatimTextOutput("provenance"),h3(textOutput("score")),textOutput("interval"),
-  textOutput("reference"),textOutput("residual"),verbatimTextOutput("qc"),
-  verbatimTextOutput("validation"),tableOutput("by_cancer"),plotOutput("scatter"),plotOutput("distribution"),
-  p("Method: frozen shared-probe elastic net. Intervals require independent calibration; unseen-domain coverage is not guaranteed. Unavailable quantities are intentionally omitted."))
+  
+  selectInput(
+    "sample",
+    "Approved sample",
+    choices = results$sample_id
+  ),
+  
+  selectInput(
+    "hrd_gene",
+    "Select gene",
+    choices = gene_choices
+  ),
+  
+  plotOutput("gene_beta_plot"),
+  
+  verbatimTextOutput("provenance"),
+  h3(textOutput("score")),
+  textOutput("interval"),
+  textOutput("reference"),
+  textOutput("residual"),
+  verbatimTextOutput("qc"),
+  verbatimTextOutput("validation"),
+  tableOutput("by_cancer"),
+  plotOutput("scatter"),
+  plotOutput("distribution"),
+  
+  p("Method: frozen shared-probe elastic net. Intervals require independent calibration; unseen-domain coverage is not guaranteed. Unavailable quantities are intentionally omitted.")
+)
 
 # --- Server -----------------------------------------------------------------
 # Every output below FAILS CLOSED: when a value is missing, unreliable, or
 # statistically unsupportable, the app prints an explicit "unavailable" message
 # rather than rendering a blank, a zero, or a misleading number.
-server <- function(input,output,session){
+server <- function(input, output, session) {
+  
   # The single currently-selected row.
-  s<-reactive(results[results$sample_id==input$sample,,drop=FALSE])
+  s <- reactive(
+    results[results$sample_id == input$sample, , drop = FALSE]
+  )
+  
+  output$gene_beta_plot <- renderPlot({
+    req(input$hrd_gene)
+    
+    matching_rows <- grepl(
+      paste0("(^|;)", input$hrd_gene, "(;|$)"),
+      beta_data$gene_name
+    )
+    
+    sample_columns <- setdiff(
+      names(beta_data),
+      c("probe_id", "gene_name")
+    )
+    
+    beta_matrix <- beta_data[
+      matching_rows,
+      sample_columns,
+      drop = FALSE
+    ]
+    
+    beta_matrix <- as.data.frame(
+      lapply(beta_matrix, as.numeric)
+    )
+    
+    sample_values <- colMeans(
+      beta_matrix,
+      na.rm = TRUE
+    )
+    
+    sample_values <- sample_values[is.finite(sample_values)]
+    
+    validate(
+      need(
+        length(sample_values) > 0,
+        "No beta values found for this gene."
+      )
+    )
+    
+    boxplot(
+      sample_values,
+      main = paste(input$hrd_gene, "beta values"),
+      ylab = "Beta value",
+      col = "skyblue",
+      border = "gray30"
+    )
+  })
+  
+  # Your existing server code continues here.
 
   # Provenance is shown first and unconditionally - the user should always know
   # whether they are looking at synthetic or real output.
