@@ -7,10 +7,18 @@
 # From repo root:
 #   source("modules/mod_hrd_exp.R")
 #   shiny::runApp(hrd_exp_demo_app())
+#
+# Standalone VizModules check from the task guide:
+#   sample_data <- prepare_hrd_exp_sample_data()
+#   VizModules::dittoViz_scatterPlotApp(
+#     data_list = list(hrd_exp = sample_data),
+#     defaults = list(x.by = "HRDsum", y.by = "exp_HRD", color.by = "cancer_type")
+#   )
 
 library(shiny)
 library(data.table)
-library(VizModules)
+library(dittoViz)
+library(plotly)
 
 prepare_hrd_exp_sample_data <- function() {
   source("R/adapters/adapt_ddr_scores.R", local = TRUE)
@@ -25,124 +33,125 @@ prepare_hrd_exp_sample_data <- function() {
   as.data.frame(sample_data)
 }
 
-hrdExpUI <- function(id, sample_data) {
+# Fast plotly wrapper: dittoViz ggplot -> plotly, no hover lag
+.to_plotly <- function(p) {
+  ggplotly(p, tooltip = "none") |>
+    layout(margin = list(l = 40, r = 10, t = 30, b = 40)) |>
+    config(displayModeBar = FALSE)
+}
+
+hrdExpUI <- function(id) {
   ns <- NS(id)
 
   tagList(
-    checkboxInput(ns("show_genome"), "Show genome-HRD panel", value = TRUE),
-    conditionalPanel(
-      condition = "input.show_genome",
-      ns = ns,
-      h4("Genome HRD"),
-      fluidRow(
-        column(
-          4,
-          dittoViz_yPlotInputsUI(
-            ns("genome"),
-            data = sample_data,
-            defaults = list(
-              var = "HRDsum",
-              group.by = "cancer_type",
-              color.by = "cancer_type",
-              plots = "boxplot"
-            )
-          )
-        ),
-        column(8, dittoViz_yPlotOutputUI(ns("genome")))
-      )
-    ),
-    h4("exp-HRD vs genome-HRD"),
-    fluidRow(
-      column(
-        4,
-        dittoViz_scatterPlotInputsUI(
-          ns("compare"),
-          data = sample_data,
-          defaults = list(
-            x.by = "HRDsum",
-            y.by = "exp_HRD",
-            color.by = "cancer_type",
-            # dittoViz: add.abline is the intercept (use 0 for y = x, not TRUE)
-            add.abline = 0,
-            abline.slope = 1,
-            abline.linetype = "dashed",
-            custom.model.enable = TRUE,
-            custom.models = list(
-              models1 = list(
-                model_type = "lm",
-                formula = "exp_HRD ~ HRDsum",
-                line_colour = "#1F77B4",
-                line_width = 2
-              )
-            )
-          )
-        )
-      ),
-      column(8, dittoViz_scatterPlotOutputUI(ns("compare")))
-    ),
-    h4("QC — purity vs exp-HRD"),
-    fluidRow(
-      column(
-        4,
-        dittoViz_scatterPlotInputsUI(
-          ns("qc"),
-          data = sample_data,
-          defaults = list(
-            x.by = "purity",
-            y.by = "exp_HRD"
-          )
-        )
-      ),
-      column(8, dittoViz_scatterPlotOutputUI(ns("qc")))
+    tags$style(HTML(sprintf("
+      #%s {
+        height: 100vh;
+        overflow: hidden;
+        padding: 8px 12px;
+        box-sizing: border-box;
+      }
+      #%s .hrd-plots {
+        height: calc(100vh - 48px);
+      }
+      #%s .hrd-plots > .row, #%s .hrd-plots .col {
+        height: 100%%;
+      }
+      #%s h5 { margin: 0 0 4px 0; font-size: 13px; }
+    ", ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap")))),
+    div(
+      id = ns("wrap"),
+      checkboxInput(ns("show_genome"), "Show genome-HRD panel", value = TRUE),
+      uiOutput(ns("plots"))
     )
   )
 }
 
 hrdExpServer <- function(id, sample_data) {
   moduleServer(id, function(input, output, session) {
-    data_reactive <- reactive(sample_data)
+    ns <- session$ns
 
-    dittoViz_yPlotServer(
-      "genome",
-      data = data_reactive,
-      defaults = list(
+    output$plots <- renderUI({
+      show <- isTRUE(input$show_genome)
+      w <- if (show) 4 else 6
+
+      cols <- list()
+      if (show) {
+        cols <- c(cols, list(column(
+          w,
+          h5("Genome HRD"),
+          plotlyOutput(ns("genome"), height = "calc(100vh - 72px)")
+        )))
+      }
+      cols <- c(cols, list(
+        column(
+          w,
+          h5("exp-HRD vs genome-HRD"),
+          plotlyOutput(ns("compare"), height = "calc(100vh - 72px)")
+        ),
+        column(
+          w,
+          h5("QC — purity vs exp-HRD"),
+          plotlyOutput(ns("qc"), height = "calc(100vh - 72px)")
+        )
+      ))
+
+      div(class = "hrd-plots", do.call(fluidRow, cols))
+    })
+
+    output$genome <- renderPlotly({
+      req(isTRUE(input$show_genome))
+      p <- dittoViz::yPlot(
+        sample_data,
         var = "HRDsum",
         group.by = "cancer_type",
         color.by = "cancer_type",
-        plots = "boxplot"
+        plots = "boxplot",
+        do.hover = FALSE,
+        legend.show = FALSE,
+        main = NULL,
+        xlab = NULL
       )
-    )
+      .to_plotly(p)
+    })
 
-    dittoViz_scatterPlotServer(
-      "compare",
-      data = data_reactive,
-      defaults = list(
+    output$compare <- renderPlotly({
+      p <- dittoViz::scatterPlot(
+        sample_data,
         x.by = "HRDsum",
         y.by = "exp_HRD",
         color.by = "cancer_type",
+        # dittoViz: add.abline is the intercept (0 => y = x)
         add.abline = 0,
         abline.slope = 1,
         abline.linetype = "dashed",
-        custom.model.enable = TRUE,
-        custom.models = list(
-          models1 = list(
-            model_type = "lm",
-            formula = "exp_HRD ~ HRDsum",
-            line_colour = "#1F77B4",
-            line_width = 2
-          )
-        )
+        do.hover = FALSE,
+        do.raster = TRUE,
+        legend.show = FALSE,
+        main = NULL
       )
-    )
+      fit <- stats::lm(exp_HRD ~ HRDsum, data = sample_data)
+      p <- p + ggplot2::geom_abline(
+        intercept = stats::coef(fit)[[1]],
+        slope = stats::coef(fit)[[2]],
+        colour = "#1F77B4",
+        linewidth = 1
+      )
+      .to_plotly(p)
+    })
 
-    dittoViz_scatterPlotServer(
-      "qc",
-      data = data_reactive,
-      defaults = list(
+    output$qc <- renderPlotly({
+      p <- dittoViz::scatterPlot(
+        sample_data,
         x.by = "purity",
-        y.by = "exp_HRD"
+        y.by = "exp_HRD",
+        do.hover = FALSE,
+        do.raster = TRUE,
+        legend.show = FALSE,
+        main = NULL
       )
-    )
+      .to_plotly(p)
+    })
   })
 }
 
@@ -150,11 +159,12 @@ hrd_exp_demo_app <- function() {
   sample_data <- prepare_hrd_exp_sample_data()
   shinyApp(
     ui = fluidPage(
-      titlePanel("HRD Transcriptome (exp-HRD)"),
-      hrdExpUI("tab3", sample_data)
+      theme = NULL,
+      hrdExpUI("tab3")
     ),
     server = function(input, output, session) {
       hrdExpServer("tab3", sample_data)
-    }
+    },
+    options = list(launch.browser = TRUE)
   )
 }
