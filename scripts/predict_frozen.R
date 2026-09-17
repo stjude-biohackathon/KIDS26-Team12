@@ -84,6 +84,22 @@ gate<-gate_matrix_provenance(matrix_pr,allow_fixture=allow_fixture)
 b<-readRDS(args[1]);d<-data.table::fread(args[2],data.table=FALSE,check.names=FALSE)
 if(anyDuplicated(d[[1]]))stop("Duplicate probes")
 
+# --- PROVENANCE GATE: refuse to score engineering fixtures -------------------
+prov_file <- paste0(tools::file_path_sans_ext(args[2]), ".provenance.json")
+if (!file.exists(prov_file)) {
+  stop("PROVENANCE GATE FAILED: No .provenance.json sidecar found for ",args[2],
+       "\nEvery beta matrix must have a .provenance.json file recording its origin.")
+}
+prov <- jsonlite::fromJSON(prov_file)
+# engineering_only=true means this is a smoke test / synthetic fixture
+# Allow it only if user explicitly passes --allow-fixture flag
+if (isTRUE(prov$engineering_only)) {
+  if (!any(grepl("--allow-fixture", args))) {
+    stop("PROVENANCE GATE BLOCKED: Matrix is marked engineering_only=true.\n",
+         "This is a test fixture, not real patient data.\n",
+         "To override: Rscript scripts/predict_frozen.R ... --allow-fixture")
+  }
+}
 # Did this matrix come off the same probe allowlist the model was trained on?
 # Non-fatal by design (see R/provenance.R): cross-platform transfer is the point
 # of the project, and features align by name. But it is recorded per row.

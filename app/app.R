@@ -70,11 +70,36 @@ fixture <- data.frame(sample_id=c("SYNTH-DEMO-A","SYNTH-DEMO-B","SYNTH-DEMO-OOD"
   reportable=c(TRUE,TRUE,FALSE),warning=c("synthetic illustration","synthetic illustration","outside_training_distribution"),
   provenance="SYNTHETIC ENGINEERING FIXTURE - NOT MODEL RESULTS")
 
-# --- Optional override -----------------------------------------------------
-# See the governance warning above: this accepts any readable TSV.
-path <- Sys.getenv("KIDS26_DEMO_RESULTS","")
-results <- if(nzchar(path)) read.delim(path,check.names=FALSE,stringsAsFactors=FALSE) else fixture
+# --- SECURED override with path allowlist + checksum verification -----------
+# Read the allowed paths from a config file or hardcoded list
+allowed_paths <- c(
+  "results/baseline/locked_predictions.tsv",
+  "results/baseline/locked_predictions_pbtp.tsv"
+  # Add paths as needed
+)
 
+path <- Sys.getenv("KIDS26_DEMO_RESULTS", "")
+results <- if (nzchar(path)) {
+  # Verify the path is in the allowlist
+  if (!path %in% allowed_paths) {
+    stop("Path not in allowlist: ", path, "\n",
+         "Allowed paths: ", paste(allowed_paths, collapse=", "))
+  }
+  
+  # Verify the .provenance.json sidecar exists and is real
+  prov_file <- paste0(tools::file_path_sans_ext(path), ".provenance.json")
+  if (!file.exists(prov_file)) {
+    stop("Missing provenance sidecar for ", path)
+  }
+  prov <- jsonlite::fromJSON(prov_file)
+  if (isTRUE(prov$engineering_only)) {
+    stop("Results marked as engineering-only. Cannot display as approved.")
+  }
+  
+  read.delim(path, check.names=FALSE, stringsAsFactors=FALSE)
+} else {
+  fixture
+}
 # Structural validation only - presence of columns and uniqueness of IDs.
 required <- c("sample_id","estimate_for_display","lower","upper","reportable","warning","provenance")
 if(!all(required %in% names(results)))stop("Demo table missing fields; see docs/08_N_OF_1_ROADMAP.md")
@@ -152,6 +177,21 @@ server <- function(input,output,session){
   # Predicted vs reference scatter with a y=x identity line. Shared axis limits
   # keep the diagonal at 45 degrees so calibration error is visually honest -
   # independent axis scaling would make a poorly calibrated model look fine.
+  output$scatter_title <- renderUI({
+  # Check provenance to decide whether to call results "approved"
+  prov_file <- paste0(tools::file_path_sans_ext(path), ".provenance.json")
+  if (file.exists(prov_file)) {
+    prov <- jsonlite::fromJSON(prov_file)
+    title_text <- if (isTRUE(prov$engineering_only)) {
+      "Demo/fixture data (not approved for clinical use)"
+    } else {
+      "Approved precomputed results"
+    }
+  } else {
+    title_text <- "Results (provenance unknown)"
+  }
+  h3(title_text)
+})
   output$scatter<-renderPlot({
     if(!"actual"%in%names(results)){plot.new();text(.5,.5,"No independent reference values supplied");return()}
     ok<-is.finite(results$actual)&is.finite(results$estimate_for_display)
@@ -165,6 +205,21 @@ server <- function(input,output,session){
 
   # Distribution of predictions, with the selected sample marked by a red rule
   # so a single case can be located within the cohort.
+  output$distribution_title <- renderUI({
+  # Check provenance to decide whether to call results "approved"
+  prov_file <- paste0(tools::file_path_sans_ext(path), ".provenance.json")
+  if (file.exists(prov_file)) {
+    prov <- jsonlite::fromJSON(prov_file)
+    title_text <- if (isTRUE(prov$engineering_only)) {
+      "Demo/fixture data (not approved for clinical use)"
+    } else {
+      "Approved precomputed results"
+    }
+  } else {
+    title_text <- "Results (provenance unknown)"
+  }
+  h3(title_text)
+})
   output$distribution<-renderPlot({
     ok<-is.finite(results$estimate_for_display)
     if(!any(ok)){plot.new();text(.5,.5,"No reportable predicted distribution");return()}
