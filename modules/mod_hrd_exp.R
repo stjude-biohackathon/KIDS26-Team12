@@ -140,8 +140,7 @@ hrdExpServer <- function(id, sample_data) {
       data = data_reactive,
       defaults = list(
         x.by = "purity",
-        y.by = "exp_HRD",
-        color.by = "cancer_type"
+        y.by = "exp_HRD"
       )
     )
   })
