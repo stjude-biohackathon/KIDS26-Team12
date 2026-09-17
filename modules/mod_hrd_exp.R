@@ -89,8 +89,7 @@ hrdExpUI <- function(id, sample_data) {
           data = sample_data,
           defaults = list(
             x.by = "purity",
-            y.by = "exp_HRD",
-            color.by = "cancer_type"
+            y.by = "exp_HRD"
           )
         )
       ),
