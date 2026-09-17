@@ -162,7 +162,7 @@ hrdExpUI <- function(id) {
       #%s .hrd-bar .shiny-input-container { margin: 0; padding: 0; }
       #%s .hrd-bar label { font-size: 13px; margin: 0; font-weight: 500; }
       #%s .hrd-note { font-size: 12px; color: #666; margin: 0; }
-      #%s .tabbable, #%s .tab-content, #%s .tab-pane {
+      #%s .tabbable, #%s .tab-content, #%s .tab-pane.active {
         height: calc(100vh - 52px);
       }
       #%s .tab-content {
@@ -171,15 +171,43 @@ hrdExpUI <- function(id) {
         border: 1px solid #ddd;
         border-top: none;
         border-radius: 0 0 4px 4px;
-        padding: 8px 10px;
+        padding: 8px 12px;
         box-sizing: border-box;
       }
-      #%s .nav-tabs { margin-bottom: 0; }
+      #%s .nav-tabs { margin-bottom: 0; border-bottom: 2px solid #147d92; }
+      #%s .nav-tabs > li > a {
+        font-size: 13px;
+        color: #555;
+      }
+      #%s .nav-tabs > li.active > a,
+      #%s .nav-tabs > li.active > a:hover,
+      #%s .nav-tabs > li.active > a:focus {
+        color: #0b4f5c;
+        font-weight: 700;
+        border-top: 3px solid #147d92;
+        background: #fff;
+      }
+      #%s .hrd-page-head {
+        margin: 0 0 6px 0;
+      }
+      #%s .hrd-page-head h4 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        color: #0b4f5c;
+      }
+      #%s .hrd-page-head p {
+        margin: 2px 0 0 0;
+        font-size: 12px;
+        color: #666;
+      }
       #%s .shiny-plot-output {
-        height: calc(100vh - 110px) !important;
+        height: calc(100vh - 150px) !important;
       }
     ", ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
-       ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap")))),
+       ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
+       ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
+       ns("wrap"), ns("wrap"), ns("wrap")))),
     div(
       id = ns("wrap"),
       div(
@@ -203,24 +231,42 @@ hrdExpServer <- function(id, sample_data) {
     output$pages <- renderUI({
       tabs <- list(
         tabPanel(
-          "Comparison",
+          title = tagList(strong("Comparison"), " · exp vs genome"),
+          value = "comparison",
+          div(
+            class = "hrd-page-head",
+            h4("Comparison — exp-HRD vs genome HRDsum"),
+            p("Primary view · dashed line = y = x · blue line = linear fit · color = cancer type")
+          ),
           plotOutput(ns("compare"), height = "100%")
         ),
         tabPanel(
-          "QC",
+          title = "QC · purity",
+          value = "qc",
+          div(
+            class = "hrd-page-head",
+            h4("QC — purity vs exp-HRD"),
+            p("Confound check only")
+          ),
           plotOutput(ns("qc"), height = "100%")
         )
       )
       if (isTRUE(input$show_genome)) {
-        tabs <- c(
-          list(tabPanel(
-            "Genome HRD",
-            plotOutput(ns("genome"), height = "100%")
-          )),
-          tabs
-        )
+        tabs <- c(tabs, list(tabPanel(
+          title = "Genome HRD",
+          value = "genome",
+          div(
+            class = "hrd-page-head",
+            h4("Genome HRD"),
+            p("Reference scar burden (HRDsum) by cancer type")
+          ),
+          plotOutput(ns("genome"), height = "100%")
+        )))
       }
-      do.call(tabsetPanel, c(tabs, list(id = ns("page"), type = "tabs")))
+      do.call(
+        tabsetPanel,
+        c(tabs, list(id = ns("page"), type = "tabs", selected = "comparison"))
+      )
     })
 
     output$genome <- renderPlot({
