@@ -1,0 +1,4 @@
+group	label	status	threshold	n	n_observed_above	n_observed_below	n_predicted_above	AUC_rank_based_continuous_score	score_is_probability	n_observed_near_threshold	n_predicted_near_threshold	near_threshold_window	crossings_TP	crossings_FP	crossings_FN	crossings_TN	sensitivity	specificity	ppv	npv	n_discordant_crossings
+GBM	Run01 pooled (SENSITIVITY)	EXPLORATORY_NOT_A_VALIDATED_CUTOFF	42	135	0	135	0	NA	FALSE	1	1	10	0	0	0	135	NA	1	NA	1	0
+LGG	Run01 pooled (SENSITIVITY)	EXPLORATORY_NOT_A_VALIDATED_CUTOFF	42	507	1	506	0	0.978260869565217	FALSE	9	0	10	0	0	1	506	0	1	NA	0.998027613412229	1
+CNS_pooled	Run01 pooled (SENSITIVITY)	EXPLORATORY_NOT_A_VALIDATED_CUTOFF	42	642	1	641	0	0.934477379095164	FALSE	10	1	10	0	0	1	641	0	1	NA	0.998442367601246	1
