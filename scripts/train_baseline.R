@@ -83,9 +83,27 @@ if (!requireNamespace("data.table",quietly=TRUE)) stop("Install dependencies wit
 # check.names=FALSE preserves TCGA barcodes verbatim; R would otherwise mangle
 # the hyphens in "TCGA-A2-A0SV-01A-..." into dots.
 # MEMORY: this is the ~21 GB allocation described in the header.
-# Load the allowlist of probes to subset during read (memory optimization)
-allowlist_probes <- c("probe_id", readLines("config/shared_autosomal_probes.txt"))
-beta <- data.table::fread(args[1],data.table=FALSE,check.names=FALSE,select=allowlist_probes)
+#
+# B4 NOTE - DO NOT re-add a `select=` probe allowlist here. Commit 4ec3493 passed
+#   select = c("probe_id", readLines("config/shared_autosomal_probes.txt"))
+# which is wrong on two independent counts:
+#
+#   1. ORIENTATION. `select=` chooses COLUMNS by name, but this matrix stores
+#      probes in ROWS and sample barcodes in COLUMNS (header is
+#      "probe_id  TCGA-OR-A5J1-01A-...  TCGA-OR-A5J2-01A-..."). Every probe ID is
+#      therefore "not found in column name header" and is SKIPPED WITH A WARNING,
+#      not an error. fread returns a single probe_id column, and the next line
+#      (t(as.matrix(beta[,-1]))) then transposes a zero-column frame. Silent
+#      wrong-shape data, not a crash.
+#
+#   2. REDUNDANCY. prepare_beta.py already intersected the matrix with the
+#      384,640-probe bridge at build time. data/processed/beta.provenance.json
+#      records probe_allowlist_sha256=f359e43b... and n_probes=336480, and the
+#      file on disk has 336,480 rows. There is nothing left to filter out.
+#
+# The genuine memory saving from that commit was rm(beta)+gc() below, which is
+# retained. See docs/21_BLOCKER_RESOLUTION_PLAN.md (B4).
+beta <- data.table::fread(args[1],data.table=FALSE,check.names=FALSE)
 if (anyDuplicated(beta[[1]])) stop("Duplicate probe IDs")
 
 # Transpose to the samples-in-rows orientation that R/model.R expects, then

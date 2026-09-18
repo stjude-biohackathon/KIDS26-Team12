@@ -34,6 +34,17 @@ defects inverted their priority:
 Performance statements about the *locked CNS partition* and about *pediatric
 transfer* remain plans, not findings. The lock is still closed.
 
+**Third update, 2026-09-17 evening — teammate integration + C1 workaround.**
+
+| Ledger change | Detail |
+|---|---|
+| **B4** → reverted in part | the `select=` allowlist subset in `4ec3493` is wrong-axis and redundant; `rm(beta); gc()` kept |
+| **B10** → **PARTLY RESOLVED** | `06cd86c` allowlist/titles reworked — 4 defects fixed; label now derives from the stamped provenance class |
+| **B13–B16 added** | process gaps exposed by the integration: no load-path test, no app-governance test, `renv.lock` drift, sentinel representativeness |
+| **C1b** → strengthened | EB shrinkage **inverts the k=3 verdict**: harmful → +40% of oracle gain |
+| **C1c** → not supported by the cheap screen | percentile remap adds zero ranking information and *increases* tissue R² |
+| C1 sentinel | array `323195423`, four folds, `priority` queue, gates pre-registered |
+
 ---
 
 ## P0 — Gates the first real result
@@ -246,6 +257,50 @@ consider `data.table::setDT` in-place transforms. Record peak RSS.
 > Note this is the *in-loop* peak, not the `train_baseline.R` serial path, which
 > remains unmeasured but is superseded by the array for Phase 1 work.
 
+> ### CORRECTION 2026-09-17 PM — the `select=` half of commit `4ec3493` was reverted
+>
+> Commit `4ec3493` ("B4: complete memory optimization") added an allowlist
+> subset during `fread()`:
+>
+> ```r
+> allowlist_probes <- c("probe_id", readLines("config/shared_autosomal_probes.txt"))
+> beta <- data.table::fread(args[1], ..., select = allowlist_probes)
+> ```
+>
+> This was **reverted**, because it is wrong on two independent counts. The
+> resolution text above ("subset to the allowlist *during* read") is what invited
+> it, so that instruction is now retracted for this matrix layout.
+>
+> **1. Wrong axis.** `select=` chooses **columns** by name. `beta.tsv` stores
+> probes in **rows** and sample barcodes in columns — the header is
+> `probe_id  TCGA-OR-A5J1-01A-…  TCGA-OR-A5J2-01A-…`. Passing probe IDs to
+> `select=` matches nothing. Reproduced on a fixture with the same orientation:
+>
+> ```
+> WARNING: Column name 'cg00000029' not found in column name header
+>          (case sensitive), skipping.
+> ```
+>
+> This is a **warning, not an error**. `fread()` returns a single `probe_id`
+> column, and the next line, `t(as.matrix(beta[,-1,drop=FALSE]))`, transposes a
+> zero-column frame. The failure is silent and produces wrong-shaped data rather
+> than stopping — the most dangerous class of bug in this repository.
+>
+> **2. Redundant even if the axis were right.** `prepare_beta.py` already
+> intersected the matrix with the bridge at build time.
+> `data/processed/beta.provenance.json` records
+> `probe_allowlist_sha256 = f359e43b…` and `n_probes = 336480`, and the file on
+> disk has 336,480 rows against the allowlist's 384,640. The filtering this
+> commit intended had already happened upstream; there was nothing left to
+> remove, so it could not have saved memory even in principle.
+>
+> **What was kept.** The `rm(beta); gc()` in the same commit is a genuine
+> improvement — it frees the ~21 GB pre-transpose copy — and remains in place.
+> A comment block at the call site records why `select=` must not come back.
+>
+> **Why this was not caught by a test.** `train_baseline.R` has no unit test that
+> exercises the load path against a realistically-oriented fixture. See **B13**.
+
 ---
 
 ## P1 — Gates credible claims
@@ -363,7 +418,7 @@ to assume a clinical threshold exists.
 
 ## P2 — Gates deployment and handoff
 
-### B10. Shiny app governance gap
+### B10. Shiny app governance gap — **PARTLY RESOLVED 2026-09-17**
 
 `app/app.R` validates the schema of `KIDS26_DEMO_RESULTS` but enforces no path
 allowlist, checksum, or approval token; raw sample identifiers render as-is; the
@@ -373,6 +428,41 @@ allowlist, checksum, or approval token; raw sample identifiers render as-is; the
 identifiers, move `results` inside `server()` for per-session isolation, and make
 the provenance label derive from the stamped provenance class rather than from
 `nzchar(Sys.getenv(...))`.
+
+> **Two of four items are now done**, building on commit `06cd86c` (Tarun), which
+> introduced the path allowlist and provenance-aware titles. That commit had four
+> defects, all fixed rather than reverted — the design intent was right.
+>
+> | # | Defect in `06cd86c` | Fix |
+> |---|---|---|
+> | 1 | Allowlist contained only `results/baseline/locked_predictions*.tsv`, but `README.md` documents `results/locked_predictions.tsv`. **The gate rejected the only workflow the repo tells you to run.** | Documented path added to the allowlist |
+> | 2 | Raw string comparison, so `./results/…` or an absolute path to the same file was rejected | Compare `normalizePath()` on both sides; also stops a symlink pointing outside the allowlist |
+> | 3 | Commit message promised "checksum verification"; no checksum was computed | Implemented against the sidecar `sha256` **when `digest` is available**, and warns explicitly when it is not, rather than silently skipping |
+> | 4 | Read a `.provenance.json` sidecar **next to the predictions table**. `predict_frozen.R` does not write one — B7 stamps a `provenance` **column**. Requiring the sidecar made every real run fail, and the two `renderUI` titles were never added to the UI, so they rendered nowhere | Gate now reads the **stamped column**, which is the artefact B7 actually guarantees; a single shared `provenance_label` replaces both dead blocks and **is** wired in via `uiOutput("results_title")` |
+>
+> **Item 4 of the original resolution is now satisfied**: the displayed label
+> derives from the stamped provenance class, not from `nzchar(Sys.getenv(...))`.
+> A table stamped `NOT A SCIENTIFIC RESULT;OVERRIDDEN_BY_ALLOW_FIXTURE` by
+> `--allow-fixture` is now **refused outright** rather than rendered under an
+> "Approved precomputed results" heading — which closes the laundering path B7
+> identified from the inference side.
+>
+> Verified executably — the gate can both accept and fail, unlike the B5 mistake:
+>
+> | Case | Result |
+> |---|---|
+> | Path outside the allowlist | REJECTED |
+> | Allowlisted path, fixture/override stamp | REJECTED |
+> | Allowlisted path, clean provenance | ACCEPTED |
+> | `./results/…` equivalent spelling | ACCEPTED (was bug 2) |
+> | No env var (default fixture) | Loads unchanged |
+>
+> **Still open in B10:** displayed identifiers are still raw (no hashing or
+> aliasing), and `results` is still a global rather than per-session inside
+> `server()`. Both matter only once real patient-derived output is displayed, so
+> B10 stays **OPEN at P2** rather than closing. These checks are also not yet in
+> an automated test — see **B13**.
+
 
 ### B11. PBTP EPIC generation unconfirmed
 
@@ -385,6 +475,98 @@ its SHA-256 re-recorded.
 
 Deferred to post-hackathon per `docs/09_POST_HACKATHON_PLAN.md`. Needed only if
 raw IDATs enter the pipeline; currently level-3 betas are used.
+
+---
+
+## New blockers opened 2026-09-17 PM
+
+These were found while integrating the teammate branch and running the C1
+sentinel folds. They are recorded here rather than fixed silently, because each
+one is a *process* gap that will otherwise recur.
+
+### B13. No test exercises the matrix load path — **OPEN, P1**
+
+**Symptom.** The `select=` defect in B4 shipped, was merged, and survived review.
+Nothing in the test suite would have caught it: `tests/smoke_model.R` tests
+`R/model.R` functions against in-memory matrices, and `tests/test_core.py` tests
+the Python acquisition layer. **No test reads a TSV from disk in the orientation
+`train_baseline.R` actually expects.**
+
+**Why it matters.** This is the second silent-wrong-shape risk in this file (the
+first being the `storage.mode` coercion warning already noted at line 93). A load
+bug does not throw — it produces a matrix of the wrong shape that flows onward
+and looks like data.
+
+**Resolution.**
+1. Add a fixture TSV: a handful of probe rows × a handful of barcode columns,
+   with the real header shape (`probe_id` then TCGA barcodes).
+2. Assert post-transpose that `nrow(x) == n_samples`, `ncol(x) == n_probes`,
+   `colnames(x)` are probe IDs, and `rownames(x)` are barcodes.
+3. Assert the load **errors** — not warns — if requested probes are absent.
+4. Run it in CI alongside `tests/smoke_model.R`.
+
+**Done when.** A deliberately mis-oriented load fails the suite.
+
+---
+
+### B14. Shiny governance checks are untested — **OPEN, P2**
+
+**Symptom.** The B10 allowlist/provenance gates were verified interactively (see
+the table under B10) but that verification lives in this document, not in a test
+file. It will rot.
+
+**Resolution.** Add `tests/test_app_governance.R` in the style of
+`tests/test_provenance_gate.R`, asserting each row of that table executably,
+including the negative controls. Bundle with B13 into one CI entry point.
+
+**Done when.** `Rscript tests/test_app_governance.R` passes and fails for the
+right reasons.
+
+---
+
+### B15. `renv.lock` does not cover the packages now in use — **OPEN, P1**
+
+**Symptom.** `scripts/setup.R` installs `glmnet`, `data.table`, `jsonlite`,
+`shiny`. Code on `main` now also uses **`matrixStats`** (B3's speedup, load-
+bearing for the 22 h → tractable result) and, after the B10 fix, optionally
+**`digest`** for checksum verification. `app/app.R` calls `jsonlite::` without
+`library(jsonlite)`.
+
+**Why it matters.** B2 closed on the premise that the environment is
+reproducible. A fresh `renv::restore()` on another machine can currently produce
+an environment where the array silently falls back or the app fails at runtime.
+
+**Resolution.**
+1. Add `matrixStats` and `digest` to `scripts/setup.R`.
+2. Re-run `renv::snapshot(prompt = FALSE)` after `tests/smoke_model.R` passes and
+   commit the updated `renv.lock`.
+3. Add an explicit `requireNamespace()` guard wherever a package is used but not
+   attached (done for `jsonlite` in `app/app.R`; audit the rest).
+
+**Done when.** A clean `renv::restore()` followed by the full test suite passes
+on a machine that has never run this project.
+
+---
+
+### B16. Sentinel/preview runs are not representative by construction — **OPEN, process**
+
+**Symptom.** The C2 four-fold log1p preview pointed the *opposite way* from the
+full 30-fold run, because the four folds chosen happened to include both tissues
+where log1p helps most (THCA, PCPG). The preview suggested correlation was
+near-neutral; the full run showed it falling in 20 of 30 tissues.
+
+**Why it matters.** The C1 rank sentinel (array `323195423`) is the same shape of
+experiment and carries the same risk. It is mitigated — the four folds were
+chosen *a priori* to span the failure modes, and THCA is designated a **negative
+control** rather than a win condition — but mitigation is not immunity.
+
+**Resolution.** Any sentinel result must state, before the numbers are read:
+which folds were chosen, why, and what result would falsify the hypothesis. A
+sentinel may **stop** a full run; it may not on its own **authorise** one unless
+the pre-registered gates in `docs/26_C1_N_OF_1_WORKAROUND.md` §7 are met.
+
+**Done when.** The C1 sentinel is reported against its pre-registered gates, with
+THCA explicitly excluded from the success criteria.
 
 ---
 
@@ -415,8 +597,8 @@ graph TD
     CONTINUE --> C3["C3 purity inversion<br/>DOWNGRADED - artefact of C1,<br/>partial cor went UP 0.612 to 0.621"]
     CONTINUE --> C4["C4 OV n=10 disclosure<br/>OPEN - 27k array excluded"]
 
-    C1 --> C1B["C1b few-shot calibration<br/>VIABLE - k=10 recovers 58%<br/>but needs 10 labels per new tissue"]
-    C1 --> C1R["C1c within-tissue rank only<br/>UNTESTED - needs same-type<br/>reference cohort at predict time"]
+    C1 --> C1B["C1b few-shot calibration<br/>STRENGTHENED - EB shrinkage<br/>makes k=3 helpful (+40% oracle)<br/>but still needs labels"]
+    C1 --> C1R["C1c relative-target model<br/>SENTINEL RUNNING - array 323195423<br/>percentile remap FAILED screen<br/>tissue R2 rose 0.562 to 0.593"]
 
     C1B --> LOCK
     C1R --> LOCK
@@ -526,6 +708,43 @@ tissues only. Fitting it on the held-out tissue is leakage and voids the fold.
 > cohort, or (b) obtain ~10 labelled samples per new tumour type. Neither solves
 > the N-of-1 pediatric case. This is an open scientific problem, not a coding
 > task.
+
+> ### C1 WORKAROUND INVESTIGATION 2026-09-17 PM — `docs/26_C1_N_OF_1_WORKAROUND.md`
+>
+> Three follow-ups were run without touching PBTP or the CNS lock.
+>
+> **C1b upgraded — shrinkage makes small k safe.** Empirical-Bayes shrinkage of
+> the offset toward a cross-tissue prior (τ² = 22.3 against σ² = 108.6, so
+> w ≈ k/(k+4.87)) **inverts the k=3 verdict recorded above**. The unshrunk mean
+> is harmful at k=3 (−22% of oracle gain); shrunk it recovers **+40%**. At k=1 it
+> converts a −214% catastrophe into +22%. Against a *fair hierarchical null*
+> given the same prior and the same k labels, the model wins in 25–26 of 29
+> tissues at every k.
+>
+> Honest limits: only 14/29 tissues are helped at k=3, and the entire benefit
+> sits in the six tissues with |offset| ≥ 5 (6/6 helped) versus 0/11 for
+> |offset| < 2. Uniform shrinkage also **over-shrinks** genuinely large offsets,
+> where the unshrunk mean still wins. It remains a **labelled-panel** method and
+> does not touch the zero-label case.
+>
+> **C1c is NOT supported by the cheap screen, and this is the important negative
+> result.** Mapping the raw prediction to a within-tissue percentile with a
+> frozen source-only monotone map beats its null on MAE (0.226 vs 0.245) and
+> gives AUROC 0.729 — but it adds **exactly zero** ranking information (macro
+> Spearman identical to the raw prediction to four decimals; a monotone map
+> cannot reorder anything), is badly miscalibrated within tissue (macro slope
+> 2.61), and its output is **more** explained by tissue identity (R² = 0.593)
+> than the raw prediction it came from (0.562). A monotone remap of a
+> tissue-confounded score is still a tissue-confounded score.
+>
+> **The honest test of C1c is the relative-target model**, which learns from a
+> within-tissue target instead of remapping afterwards. Implemented in
+> `R/rank_model.R` with 12 leakage/invariance tests passing; validated on
+> synthetic data only (transfers at ρ ≈ 0.96, manufactures nothing under a pure
+> tissue intercept or a noise negative control). **Sentinel array `323195423`
+> (BRCA, KICH, THCA, UCEC) submitted to the `priority` queue 2026-09-17 19:37.**
+> Gates are pre-registered in `docs/26_C1_N_OF_1_WORKAROUND.md` §7; see **B16**.
+
 
 ### C2. Unbounded predictions against a zero-floored label — **PARTLY RESOLVED**
 

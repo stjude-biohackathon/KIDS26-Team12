@@ -1,0 +1,95 @@
+#!/bin/bash
+#BSUB -J "kids26_rank[3,10,26,28]"
+#BSUB -q priority
+#BSUB -n 4
+#BSUB -R "span[hosts=1] rusage[mem=60GB]"
+#BSUB -M 240GB
+#BSUB -W 8:00
+#BSUB -o logs/rank_%J_%I.out
+#BSUB -e logs/rank_%J_%I.err
+# =============================================================================
+# KIDS26 Team 12 - C1 SENTINEL folds for the tissue-relative (rank) model.
+# =============================================================================
+#
+# WHAT THIS RUNS
+#   FOUR outer folds only, not all thirty. Each task holds out one cancer type,
+#   fits the relative-target model from R/rank_model.R on the other 29, and
+#   scores the held-out type. Tasks are independent.
+#
+# WHY ONLY FOUR
+#   docs/26_C1_N_OF_1_WORKAROUND.md commits to a sentinel-then-gate protocol:
+#   the full 30-fold rank array is only justified if these four clear explicit
+#   gates. Running 30 folds before knowing whether the relative target holds up
+#   would repeat the C2/log1p mistake, where a four-fold preview built from two
+#   unrepresentative tissues pointed the opposite way from the full run.
+#
+#   The indices below are POSITIONS IN sort(unique(cancer_type[!cns])), the same
+#   ordering loco_one_fold.R and c1_rank_one_fold.R use:
+#        3 = BRCA   largest tissue, run 01 within-tissue r = 0.632. If the
+#                   relative target destroys BRCA, the idea is dead.
+#       10 = KICH   small (n=65) but the STRONGEST within-tissue r in run 01
+#                   (0.803). Tests whether the signal survives in a small cohort.
+#       26 = THCA   NEGATIVE CONTROL. Run 01 r = -0.032: its within-tissue target
+#                   is near-constant, so rank evaluation there is close to
+#                   meaningless. THCA scoring well is NOT evidence of success and
+#                   must not be reported as such.
+#       28 = UCEC   large, high within-tissue r (0.758) AND the largest positive
+#                   tissue offset (+6.49). Separates ranking from calibration.
+#
+# VARIANT
+#   V2 = normal_score / tissue / pooled. Tissue-weighted because run 01's
+#   hyperparameter loss was macro-averaged while the final glmnet fit was still
+#   per-sample weighted, so large tissues dominated the fit.
+#
+# QUEUE CHOICE - priority, NOT biohackathon
+#   biohackathon has exactly two usable nodes and 80 priority. The log1p arrays
+#   (323169191, 323176856) have now finished 30/30, but priority maps to the
+#   rhel8_rome host group: 46 nodes at 1,003 GB and 14 at 1.9 TB. A 240 GB task
+#   places easily there and leaves biohackathon free for teammates.
+#
+#   *** rusage[mem] ON THIS CLUSTER IS PER SLOT, NOT PER JOB. ***
+#   60 GB x 4 slots = 240 GB reserved, matching -M. The measured peak for the
+#   equivalent absolute-model fold was 173 GB (job 323075937), so this is ~39%
+#   headroom. Do not raise -n without lowering rusage[mem] to match.
+#
+# SUBMIT
+#   bsub < scripts/lsf_c1_rank_sentinel.bsub
+#
+# MONITOR
+#   bjobs -A
+#   tail -f logs/rank_<JOBID>_3.out
+#
+# AFTER ALL FOUR COMPLETE
+#   Compare per-fold metrics_<type>.tsv against run 01's
+#   results/loco_run01/per_tissue_within_correlation.tsv, then evaluate the
+#   gates in docs/26_C1_N_OF_1_WORKAROUND.md section 7 BEFORE launching any
+#   full array.
+# =============================================================================
+
+set -euo pipefail
+
+REPO=/research/groups/shelagrp/home/esavage/KIDS26/KIDS26-Team12
+BETA=data/processed/beta.tsv
+META=data/processed/master_samples.tsv
+OUT=results/c1_rank_probe
+
+cd "$REPO"
+mkdir -p logs "$OUT/folds"
+
+echo "=== rank sentinel job ${LSB_JOBID} task ${LSB_JOBINDEX} on $(hostname) ==="
+echo "started: $(date)"
+free -g | head -2
+echo
+
+# Pin thread counts to the slots LSF granted, so R's BLAS does not spawn one
+# thread per physical core (up to 128 on some rome nodes) and oversubscribe.
+export OMP_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export OPENBLAS_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export MKL_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+
+# LSB_JOBINDEX is the 1-based fold index into the sorted development types.
+Rscript scripts/c1_rank_one_fold.R "$BETA" "$META" "$OUT" "${LSB_JOBINDEX}" \
+        normal_score tissue pooled
+
+echo
+echo "finished: $(date)"

@@ -70,33 +70,90 @@ fixture <- data.frame(sample_id=c("SYNTH-DEMO-A","SYNTH-DEMO-B","SYNTH-DEMO-OOD"
   reportable=c(TRUE,TRUE,FALSE),warning=c("synthetic illustration","synthetic illustration","outside_training_distribution"),
   provenance="SYNTHETIC ENGINEERING FIXTURE - NOT MODEL RESULTS")
 
-# --- SECURED override with path allowlist + checksum verification -----------
-# Read the allowed paths from a config file or hardcoded list
+# --- SECURED override: path allowlist + provenance gate --------------------
+# Reworked from commit 06cd86c, which introduced the right idea with four
+# defects. Recorded here so they are not reintroduced:
+#
+#   1. The allowlist listed results/baseline/locked_predictions*.tsv, but the
+#      documented command in README.md writes results/locked_predictions.tsv.
+#      The gate therefore rejected the ONLY workflow the repo tells you to run.
+#   2. Paths were compared as raw strings, so "./results/locked_predictions.tsv"
+#      or an absolute path to the same file failed while naming the identical
+#      bytes. Comparison is now on normalizePath().
+#   3. The commit message promised "checksum verification" but no checksum was
+#      computed. It is implemented below, against the sidecar's sha256 when one
+#      is recorded.
+#   4. It read the sidecar of the PREDICTIONS table. predict_frozen.R does not
+#      write a .provenance.json next to its output - it stamps a `provenance`
+#      COLUMN (B7). Requiring a nonexistent sidecar made every real run fail.
+#      The column is the load-bearing artefact and is what we check.
+#
+# jsonlite is used below and must be attached explicitly; relying on it being
+# pulled in by another package is how this breaks on a clean renv restore.
+if (!requireNamespace("jsonlite", quietly = TRUE)) {
+  stop("jsonlite is required. Install with scripts/setup.R")
+}
+
 allowed_paths <- c(
+  "results/locked_predictions.tsv",            # the path README.md documents
   "results/baseline/locked_predictions.tsv",
   "results/baseline/locked_predictions_pbtp.tsv"
-  # Add paths as needed
 )
 
 path <- Sys.getenv("KIDS26_DEMO_RESULTS", "")
+
 results <- if (nzchar(path)) {
-  # Verify the path is in the allowlist
-  if (!path %in% allowed_paths) {
+  if (!file.exists(path)) stop("KIDS26_DEMO_RESULTS does not exist: ", path)
+
+  # Compare canonical paths so an equivalent spelling of an allowed file is not
+  # rejected, and a symlink cannot smuggle in a file from outside the allowlist.
+  canon         <- normalizePath(path, mustWork = TRUE)
+  canon_allowed <- vapply(allowed_paths, function(p)
+    if (file.exists(p)) normalizePath(p, mustWork = FALSE) else NA_character_,
+    character(1))
+  if (!canon %in% stats::na.omit(canon_allowed)) {
     stop("Path not in allowlist: ", path, "\n",
-         "Allowed paths: ", paste(allowed_paths, collapse=", "))
+         "Allowed: ", paste(allowed_paths, collapse = ", "))
   }
-  
-  # Verify the .provenance.json sidecar exists and is real
+
+  # Optional checksum. predict_frozen.R does not currently emit a sidecar for
+  # its output; if one is ever added with a sha256 field, a mismatch is fatal.
+  # Absence is tolerated because the provenance COLUMN below is the real gate.
+  # NOTE: sha256 needs a package (digest/openssl). Rather than pretend to check,
+  # we verify only when the tooling is actually present, and say so otherwise.
   prov_file <- paste0(tools::file_path_sans_ext(path), ".provenance.json")
-  if (!file.exists(prov_file)) {
-    stop("Missing provenance sidecar for ", path)
+  if (file.exists(prov_file)) {
+    prov <- jsonlite::fromJSON(prov_file)
+    if (isTRUE(prov$engineering_only)) {
+      stop("Results marked engineering_only. Cannot display as approved.")
+    }
+    if (!is.null(prov$sha256)) {
+      if (requireNamespace("digest", quietly = TRUE)) {
+        if (!identical(digest::digest(path, algo = "sha256", file = TRUE), prov$sha256)) {
+          stop("Checksum mismatch for ", path, " against its provenance sidecar.")
+        }
+      } else {
+        warning("Sidecar records a sha256 but package 'digest' is unavailable, ",
+                "so the checksum was NOT verified.")
+      }
+    }
   }
-  prov <- jsonlite::fromJSON(prov_file)
-  if (isTRUE(prov$engineering_only)) {
-    stop("Results marked as engineering-only. Cannot display as approved.")
+
+  tab <- read.delim(path, check.names = FALSE, stringsAsFactors = FALSE)
+
+  # THE LOAD-BEARING CHECK. predict_frozen.R stamps the provenance class into
+  # this column, and --allow-fixture leads it with "NOT A SCIENTIFIC RESULT"
+  # precisely so it cannot be laundered into the demo. Refuse those here rather
+  # than rendering them under an "approved" heading.
+  if (!"provenance" %in% names(tab)) {
+    stop("Results table has no provenance column; refusing to display.")
   }
-  
-  read.delim(path, check.names=FALSE, stringsAsFactors=FALSE)
+  if (any(grepl("NOT A SCIENTIFIC RESULT|OVERRIDDEN_BY_ALLOW_FIXTURE|SYNTHETIC",
+                tab$provenance, ignore.case = TRUE))) {
+    stop("Results carry a fixture/override provenance stamp. Refusing to display ",
+         "as approved output. See B7 in docs/21_BLOCKER_RESOLUTION_PLAN.md")
+  }
+  tab
 } else {
   fixture
 }
@@ -114,7 +171,7 @@ ui <- fluidPage(titlePanel("KIDS26: methylation prediction of genomic-scar burde
   selectInput("sample","Approved sample",choices=results$sample_id),
   verbatimTextOutput("provenance"),h3(textOutput("score")),textOutput("interval"),
   textOutput("reference"),textOutput("residual"),verbatimTextOutput("qc"),
-  verbatimTextOutput("validation"),tableOutput("by_cancer"),plotOutput("scatter"),plotOutput("distribution"),
+  verbatimTextOutput("validation"),tableOutput("by_cancer"),uiOutput("results_title"),plotOutput("scatter"),plotOutput("distribution"),
   p("Method: frozen shared-probe elastic net. Intervals require independent calibration; unseen-domain coverage is not guaranteed. Unavailable quantities are intentionally omitted."))
 
 # --- Server -----------------------------------------------------------------
@@ -177,53 +234,36 @@ server <- function(input,output,session){
   # Predicted vs reference scatter with a y=x identity line. Shared axis limits
   # keep the diagonal at 45 degrees so calibration error is visually honest -
   # independent axis scaling would make a poorly calibrated model look fine.
-  output$scatter_title <- renderUI({
-  # Check provenance to decide whether to call results "approved"
-  prov_file <- paste0(tools::file_path_sans_ext(path), ".provenance.json")
-  if (file.exists(prov_file)) {
-    prov <- jsonlite::fromJSON(prov_file)
-    title_text <- if (isTRUE(prov$engineering_only)) {
-      "Demo/fixture data (not approved for clinical use)"
+  # B10: the displayed label derives from the STAMPED PROVENANCE CLASS in the
+  # table, not from nzchar(Sys.getenv(...)). Setting an env var is not evidence
+  # of approval; the provenance column is what predict_frozen.R actually
+  # guarantees. Computed once and shared by both plots and the heading.
+  provenance_label <- local({
+    cls <- unique(as.character(results$provenance))
+    if (!nzchar(path)) {
+      "Synthetic illustration only - NOT MODEL RESULTS"
+    } else if (any(grepl("NOT A SCIENTIFIC RESULT|SYNTHETIC|FIXTURE", cls, ignore.case = TRUE))) {
+      "Fixture / overridden provenance - NOT approved output"
     } else {
-      "Approved precomputed results"
+      paste0("Precomputed results (provenance: ", paste(cls, collapse = "; "), ")")
     }
-  } else {
-    title_text <- "Results (provenance unknown)"
-  }
-  h3(title_text)
-})
+  })
+  output$results_title <- renderUI(h3(provenance_label))
+
   output$scatter<-renderPlot({
     if(!"actual"%in%names(results)){plot.new();text(.5,.5,"No independent reference values supplied");return()}
     ok<-is.finite(results$actual)&is.finite(results$estimate_for_display)
     if(sum(ok)<2){plot.new();text(.5,.5,"Insufficient paired values");return()}
     lim<-range(c(results$actual[ok],results$estimate_for_display[ok]))
-    # NOTE: the title switches to "Approved precomputed results" purely because
-    # an env var is set. See the governance warning in the header - this label
-    # asserts approval it has not verified.
-    plot(results$actual[ok],results$estimate_for_display[ok],xlab="Reference HRDsum",ylab="Predicted HRDsum",xlim=lim,ylim=lim,pch=19,col="#147d92",main=if(!nzchar(path))"Synthetic illustration only" else "Approved precomputed results");abline(0,1,lty=2,col="grey")
+    plot(results$actual[ok],results$estimate_for_display[ok],xlab="Reference HRDsum",ylab="Predicted HRDsum",xlim=lim,ylim=lim,pch=19,col="#147d92",main=provenance_label);abline(0,1,lty=2,col="grey")
   })
 
   # Distribution of predictions, with the selected sample marked by a red rule
   # so a single case can be located within the cohort.
-  output$distribution_title <- renderUI({
-  # Check provenance to decide whether to call results "approved"
-  prov_file <- paste0(tools::file_path_sans_ext(path), ".provenance.json")
-  if (file.exists(prov_file)) {
-    prov <- jsonlite::fromJSON(prov_file)
-    title_text <- if (isTRUE(prov$engineering_only)) {
-      "Demo/fixture data (not approved for clinical use)"
-    } else {
-      "Approved precomputed results"
-    }
-  } else {
-    title_text <- "Results (provenance unknown)"
-  }
-  h3(title_text)
-})
   output$distribution<-renderPlot({
     ok<-is.finite(results$estimate_for_display)
     if(!any(ok)){plot.new();text(.5,.5,"No reportable predicted distribution");return()}
-    hist(results$estimate_for_display[ok],breaks="FD",col="#7fc8d8",border="white",xlab="Predicted reference HRDsum",main=if(!nzchar(path))"Synthetic fixture distribution" else "Approved prediction distribution")
+    hist(results$estimate_for_display[ok],breaks="FD",col="#7fc8d8",border="white",xlab="Predicted reference HRDsum",main=provenance_label)
     if(isTRUE(s()$reportable[1])&&is.finite(s()$estimate_for_display[1]))abline(v=s()$estimate_for_display[1],col="#b2182b",lwd=2)
   })
 }
