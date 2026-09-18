@@ -121,7 +121,7 @@ flowchart TD
 
     subgraph REPAIR["STAGE 5B - MODEL REPAIRS (investigated 2026-09-17)"]
         C1["C1 per-tissue calibration<br/>ESCALATED - label-free<br/>covariates FAILED, LOTO R2 -0.116"]
-        C2["C2 zero floor<br/>clip ADOPTED +0.008 skill<br/>log1p 30-fold run in flight"]
+        C2["C2 zero floor - RESOLVED<br/>clip ADOPTED +0.008 skill<br/>log1p REJECTED, r fell 0.612 to 0.522"]
         C3["C3 purity inversion<br/>DOWNGRADED - artefact of C1<br/>partial cor rose 0.612 to 0.621"]
         C4["C4 OV is n=10<br/>disclosure, not a code fix"]
         C1B["C1b few-shot calibration<br/>VIABLE - k=10 gets 58% of gain<br/>k=3 actively HURTS"]
@@ -212,7 +212,7 @@ flowchart TD
 | C1b few-shot | **VIABLE** | k=10 → 58% of achievable gain; k=3 hurts |
 | C1c rank-only | **UNTESTED** | needs same-type cohort at predict time |
 | C2 clip | **ADOPTED** | MAE 9.049 → 8.972, Spearman 1.000 |
-| C2 log1p | **In flight** | 4/30 folds done, MAE −29% but r falls on BRCA/UCEC |
+| C2 log1p | **REJECTED** | 30/30 folds: MAE better but within-tissue r 0.612 → 0.522 |
 | C3 purity | **DOWNGRADED** | partial cor rose 0.612 → 0.621 |
 | C4 OV n=10 | **OPEN** | disclosure only |
 
@@ -227,10 +227,11 @@ not CPU-bound, 6.7 h wall for the full array.
 priority order below is not the one this document carried this morning — two
 defects swapped places once measured.
 
-1. **C2 log1p decision** — full 30-fold run in flight (arrays `323169191` +
-   `323176856`). Clipping is already adopted: free, +0.008 skill, ranking
-   exactly preserved. log1p cut MAE 29% on the first 4 folds but *lowered*
-   within-tissue correlation on BRCA and UCEC, so the pooled run decides it.
+1. **C2 — RESOLVED.** Clipping adopted (free, +0.008 skill, ranking exactly
+   preserved). log1p **rejected** on the full 30-fold run: it improves absolute
+   MAE (9.049 → 8.827) but degrades within-tissue correlation
+   (0.612 → 0.522) in 20 of 30 tissues, including the high-HRD tissues where
+   discrimination matters most.
 2. **C1 — now the hard problem, not a quick fix.** The label-free tissue
    covariate approach failed leave-one-tissue-out in every configuration
    (best R² = −0.116, worse than a constant). Two supported paths remain:

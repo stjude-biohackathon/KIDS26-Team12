@@ -279,16 +279,64 @@ catastrophic failure into a modest one rather than into a success.
 
 **Adopt clipping unconditionally** (free, ranking-preserving, +0.008 skill).
 
-**Adopt log1p provisionally, and re-run all 30 folds before committing to it.**
-Four folds chosen for their extremes cannot settle a pooled decision, and the
-BRCA correlation loss is a real cost in the clinically important direction. The
-honest summary is that log1p trades discrimination among high-HRD tumours for
-large accuracy gains among low-HRD ones — whether that is a good trade depends
-on the intended use, which for pediatric HRD screening has not been fixed.
+**REJECT log1p for the primary model** — see the full 30-fold result below.
 
-If the goal is **ranking patients within a tissue** (the direction C1 pushes us
-toward), correlation is the metric that matters and log1p's advantage largely
-disappears: 0.440 → 0.450 pooled.
+---
+
+## C2 final — full 30-fold log1p run: REJECTED
+
+Array `323176856` (26 folds) + `323169191` (4 folds) = 30/30, merged
+2026-09-17. Zero failures, 0/30 lambda boundary hits.
+
+| Metric | Baseline (run 01) | log1p | Verdict |
+|---|---|---|---|
+| Pooled MAE | 9.049 | **8.827** | log1p better |
+| Skill vs tissue null | 0.0850 | **0.1075** | log1p better |
+| **Within-tissue Pearson** | **0.6124** | 0.5221 | **baseline better by 0.090** |
+| Within-tissue Spearman | **0.6013** | 0.5899 | baseline better |
+| Within-tissue MAE | **7.881** | 8.234 | baseline better |
+| Permutation p | 0.001 | 0.001 | tie |
+| Negative predictions | 227 | **0** | log1p better |
+
+### The four-fold preview was misleading
+
+The 4-fold test suggested log1p was close to neutral on correlation
+(0.440 → 0.450 pooled). **The full run reverses that**: within-tissue Pearson
+drops **0.6124 → 0.5221**, a loss of 0.090. The four folds chosen for the
+preview happened to include both tissues where log1p helps most (THCA, PCPG);
+they were not representative.
+
+Across all 30 tissues, **correlation falls in 20 of 30** while MAE improves in
+only 16 of 30.
+
+| Biggest correlation losses | r base → log1p | | Biggest gains | r base → log1p |
+|---|---|---|---|---|
+| ESCA | 0.508 → 0.350 | | THCA | −0.032 → **0.171** |
+| BLCA | 0.675 → 0.529 | | KIRP | 0.500 → **0.672** |
+| LUSC | 0.605 → 0.467 | | KIRC | 0.577 → **0.686** |
+| STAD | 0.738 → 0.623 | | DLBC | 0.555 → 0.654 |
+
+### Why this settles it against log1p
+
+The MAE and skill gains are real but small (skill +0.022). The correlation loss
+is large (−0.090) and lands precisely where it hurts: **BLCA, STAD, LUSC and
+ESCA are high-HRD tissues where discriminating more- from less-scarred tumours
+is the clinically useful task.**
+
+Decisively, `docs/25` §C1 established that absolute calibration on an unseen
+tissue is **not achievable** without labels. That forces the project toward
+**within-tissue ranking**, and ranking quality is measured by correlation — the
+exact metric log1p degrades. log1p optimises the metric we are being forced to
+abandon (absolute MAE) at the cost of the one we must rely on.
+
+### Status
+
+**C2 RESOLVED.** Adopt clipping. Reject log1p for the primary model.
+
+Retain log1p as a **documented option for the quiet-tumour regime** — it is the
+only thing tested that gives THCA any within-tissue signal at all
+(−0.032 → 0.171). A per-tissue choice of transform is *not* recommended without
+a principled selection rule fitted inside the LOCO loop, which does not exist.
 
 **Note on zero inflation:** `log1p` maps 0 → 0, so the 14.3% point mass at
 exactly zero remains irreproducible by any continuous regressor. `log1p`

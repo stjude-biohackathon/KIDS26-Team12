@@ -52,26 +52,59 @@ ul.task-list li input[type="checkbox"] {
 
 <section id="pipeline-schematic-and-current-position" class="level1">
 <h1>23 — Pipeline Schematic and Current Position</h1>
-<p><strong>Status as of 2026-09-17 00:05 CDT.</strong> Array <code>323078995</code> running, 0 of 30 folds complete. This document is the map; <code>docs/21</code> is the blocker ledger.</p>
+<p><strong>Status: 2026-09-17 11:45 CDT.</strong> Array <code>323078995</code> <strong>COMPLETE</strong> (30/30 folds, merged 06:20). First real result exists — see <code>docs/24_RESULTS_LOCO_RUN01.md</code>. <code>docs/21</code> is the blocker ledger.</p>
+<blockquote class="blockquote">
+<p><strong>Changed since the 2026-09-16 version of this document:</strong> Stage 5 moved from RUNNING to COMPLETE, Stages 6 and 7 executed, the verdict fork resolved to “continue modelling”, and a new Stage 5B (model-quality repairs C1–C4) was inserted before the CNS lock can open.</p>
+</blockquote>
 <hr>
+<section id="legend" class="level2">
+<h2 class="anchored" data-anchor-id="legend">1. Legend</h2>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Colour</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Green</td>
+<td>Complete and verified</td>
+</tr>
+<tr class="even">
+<td>Amber</td>
+<td>Open work, next up</td>
+</tr>
+<tr class="odd">
+<td>Red</td>
+<td>Blocked, locked, or a serious unresolved defect</td>
+</tr>
+<tr class="even">
+<td>Blue</td>
+<td>Gate or guard</td>
+</tr>
+</tbody>
+</table>
+<hr>
+</section>
 <section id="the-whole-pipeline" class="level2">
-<h2 class="anchored" data-anchor-id="the-whole-pipeline">1. The whole pipeline</h2>
+<h2 class="anchored" data-anchor-id="the-whole-pipeline">2. The whole pipeline</h2>
 <pre class="mermaid"><code>flowchart TD
-    subgraph ACQ["STAGE 1 — ACQUISITION (complete)"]
+    subgraph ACQ["STAGE 1 - ACQUISITION (COMPLETE)"]
         A1["TCGA PanCanAtlas download&lt;br/&gt;scripts/acquire_tcga.py&lt;br/&gt;41.5 GB, md5-gated"]
         A2["Resolve barcodes to cases&lt;br/&gt;scripts/resolve_tcga_cases.py"]
-        A3["raw payload + .sha256 sidecar&lt;br/&gt;data/raw/pancanatlas/"]
+        A3["raw payload + sha256 sidecar&lt;br/&gt;data/raw/pancanatlas/"]
         A1 --&gt; A2 --&gt; A3
     end
 
-    subgraph PREP["STAGE 2 — FEATURE PREP (complete)"]
+    subgraph PREP["STAGE 2 - FEATURE PREP (COMPLETE)"]
         P1["Technical probe allowlist&lt;br/&gt;scripts/build_probe_bridge.py&lt;br/&gt;384,640 allowed probes"]
-        P2["Bounded beta matrix&lt;br/&gt;scripts/prepare_beta.py&lt;br/&gt;writes .provenance.json"]
+        P2["Bounded beta matrix&lt;br/&gt;scripts/prepare_beta.py&lt;br/&gt;writes provenance.json"]
         P3["beta.tsv&lt;br/&gt;336,480 probes x 7,707 samples&lt;br/&gt;28.2 GB on disk"]
         P1 --&gt; P2 --&gt; P3
     end
 
-    subgraph LABEL["STAGE 3 — LABELS AND METADATA (complete)"]
+    subgraph LABEL["STAGE 3 - LABELS AND METADATA (COMPLETE)"]
         L1["Specimen-level join&lt;br/&gt;scripts/build_master.py&lt;br/&gt;ambiguous replicates EXCLUDED"]
         L2["CNV-derived features&lt;br/&gt;scripts/cnv_features.py"]
         L3["Cohort audit&lt;br/&gt;scripts/audit_cohort.py"]
@@ -84,10 +117,10 @@ ul.task-list li input[type="checkbox"] {
     A3 --&gt; P1
     A3 --&gt; L1
 
-    subgraph SPLIT["STAGE 4 — THE LOCK"]
-        S1{"cancer_type in GBM, LGG ?"}
-        S2["LOCKED CNS PARTITION&lt;br/&gt;642 samples&lt;br/&gt;NEVER fitted, NEVER scored&lt;br/&gt;opened exactly once, at the end"]
-        S3["DEVELOPMENT COHORT&lt;br/&gt;30 non-CNS cancer types&lt;br/&gt;7,065 samples"]
+    subgraph SPLIT["STAGE 4 - THE LOCK (APPLIED)"]
+        S1{"cancer_type is GBM or LGG?"}
+        S2["LOCKED CNS PARTITION&lt;br/&gt;642 samples&lt;br/&gt;STILL UNOPENED as of 2026-09-17"]
+        S3["DEVELOPMENT COHORT&lt;br/&gt;30 non-CNS cancer types&lt;br/&gt;n = 7,065"]
         S1 --&gt;|yes| S2
         S1 --&gt;|no| S3
     end
@@ -95,39 +128,35 @@ ul.task-list li input[type="checkbox"] {
     P3 --&gt; S1
     L4 --&gt; S1
 
-    subgraph MODEL["STAGE 5 — NESTED LOCO CV  &amp;lt;&amp;lt;&amp;lt; WE ARE HERE &amp;gt;&amp;gt;&amp;gt;"]
-        M1["LSF array kids26_loco[1-30]%4&lt;br/&gt;job 323078995&lt;br/&gt;one task per held-out cancer"]
+    subgraph MODEL["STAGE 5 - NESTED LOCO CV (COMPLETE)"]
+        M1["LSF array 323078995&lt;br/&gt;30 tasks, 4 concurrent&lt;br/&gt;30 DONE / 0 EXIT"]
         M2["scripts/loco_one_fold.R"]
-        M3["INNER LOOP inside fit_en()&lt;br/&gt;each remaining cancer = one inner fold&lt;br/&gt;leave-one-cancer-out INSIDE&lt;br/&gt;leave-one-cancer-out"]
-        M4["Learned on TRAIN ROWS ONLY (6 quantities)&lt;br/&gt;medians, centres, scales,&lt;br/&gt;variance ranking to 5,000 probes,&lt;br/&gt;lambda path, conformal width"]
-        M5["Tune alpha in 0.1, 0.5, 1&lt;br/&gt;lambda anchored to glmnet lambda.max"]
-        M6["Refit on full fold-train,&lt;br/&gt;score the held-out cancer ONCE"]
-        M7["Per-fold artefacts&lt;br/&gt;metrics_TYPE.tsv, predictions_TYPE.tsv,&lt;br/&gt;nullpanel_TYPE.tsv, loco_TYPE.rds"]
+        M3["INNER LOOP in fit_en:&lt;br/&gt;each remaining cancer = one inner fold&lt;br/&gt;LOCO nested inside LOCO"]
+        M4["6 quantities learned on TRAIN ROWS ONLY:&lt;br/&gt;medians, centres, scales,&lt;br/&gt;variance rank to 5,000 probes,&lt;br/&gt;lambda path, conformal width"]
+        M5["Tuned alpha in 0.1 / 0.5 / 1&lt;br/&gt;lambda anchored to glmnet lambda.max&lt;br/&gt;0 of 30 folds hit a boundary"]
+        M6["Refit on fold-train,&lt;br/&gt;score held-out cancer ONCE"]
+        M7["Per-fold artefacts, 30 x 5 files&lt;br/&gt;results/loco_run01/folds/"]
         M1 --&gt; M2 --&gt; M3 --&gt; M4 --&gt; M5 --&gt; M6 --&gt; M7
     end
 
     S3 --&gt; M1
 
-    subgraph WATCH["AUTOMATION (running)"]
-        W1["scripts/watch_loco_array.sh&lt;br/&gt;PID 2386755, polls 300 s"]
-        W2{"EXIT'd index?"}
-        W3["resubmit, max 2 attempts&lt;br/&gt;-n 4, rusage[mem=60GB] PER SLOT"]
-        W4{"all 30 metrics files&lt;br/&gt;present and non-empty?"}
-        W1 --&gt; W2
-        W2 --&gt;|yes| W3 --&gt; W1
-        W2 --&gt;|no| W4
-        W4 --&gt;|no| W1
+    subgraph WATCH["AUTOMATION (RAN SUCCESSFULLY)"]
+        W1["scripts/watch_loco_array.sh&lt;br/&gt;polled 300 s, detached"]
+        W2["0 resubmissions needed"]
+        W3["Fired merge at 06:20&lt;br/&gt;once all 30 were present"]
+        W1 --&gt; W2 --&gt; W3
     end
 
     M7 --&gt; W1
 
-    subgraph MERGE["STAGE 6 — POOLED VERDICT (blocked until 30/30)"]
-        G1["scripts/loco_merge.R&lt;br/&gt;REFUSES a partial cohort"]
-        G2["POOLED null panel&lt;br/&gt;skill_vs_tissue_mean&lt;br/&gt;&amp;lt;&amp;lt; THE DECIDING NUMBER &amp;gt;&amp;gt;"]
-        G3["Within-tissue metrics"]
-        G4["Within-tissue permutation&lt;br/&gt;n_perm = 1000"]
-        G5["Purity-stratified controls&lt;br/&gt;cor(pred,purity) within tissue"]
-        G6["lambda_at_boundary count&lt;br/&gt;majority at endpoint = widen path"]
+    subgraph MERGE["STAGE 6 - POOLED VERDICT (COMPLETE)"]
+        G1["scripts/loco_merge.R&lt;br/&gt;refused partial cohorts; got 30/30"]
+        G2["POOLED skill_vs_tissue_mean&lt;br/&gt;= +0.085&lt;br/&gt;MAE 9.049 vs null 9.890"]
+        G3["Within-tissue Pearson = 0.612&lt;br/&gt;Spearman = 0.601"]
+        G4["Within-tissue permutation&lt;br/&gt;p = 0.001, 1000 perms"]
+        G5["Purity controls&lt;br/&gt;cor pred-purity = 0.165&lt;br/&gt;cor label-purity = 0.019"]
+        G6["Lambda boundary: 0 of 30&lt;br/&gt;fit was NOT grid-limited"]
         G1 --&gt; G2
         G1 --&gt; G3
         G1 --&gt; G4
@@ -135,102 +164,168 @@ ul.task-list li input[type="checkbox"] {
         G1 --&gt; G6
     end
 
-    W4 --&gt;|yes| G1
+    W3 --&gt; G1
 
-    subgraph DECIDE["STAGE 7 — THE FORK (not yet reached)"]
-        D1{"pooled skill_vs_tissue_mean &amp;gt; 0 ?"}
-        D2["Model beats the tissue-mean null.&lt;br/&gt;Freeze, then open the CNS lock ONCE."]
-        D3["Model does NOT beat it.&lt;br/&gt;Consistent with having learned&lt;br/&gt;TISSUE LINEAGE, not HRD biology.&lt;br/&gt;Must NOT be presented as an HRD result."]
-        D1 --&gt;|yes| D2
-        D1 --&gt;|no| D3
+    subgraph DECIDE["STAGE 7 - THE FORK (RESOLVED)"]
+        D0["Apparent contradiction:&lt;br/&gt;skill only +0.085&lt;br/&gt;but within-tissue r = 0.61"]
+        D1["RESOLVED: model ranks correctly&lt;br/&gt;WITHIN tissue but mis-levels&lt;br/&gt;each tissue by 3.46 units mean"]
+        D2["Tissue explains 56.2% of predictions&lt;br/&gt;but only 34.1% of truth&lt;br/&gt;=&gt; over-weights lineage"]
+        D3["VERDICT: confound is REAL&lt;br/&gt;but NOT disqualifying.&lt;br/&gt;CONTINUE MODELLING,&lt;br/&gt;reframed as within-tissue ranker"]
+        D0 --&gt; D1 --&gt; D2 --&gt; D3
     end
 
-    G2 --&gt; D1
+    G2 --&gt; D0
+    G3 --&gt; D0
 
-    subgraph INFER["STAGE 8 — INFERENCE (gated, B7 closed today)"]
+    subgraph REPAIR["STAGE 5B - MODEL REPAIRS (OPEN - NEXT WORK)"]
+        C1["C1 per-tissue calibration&lt;br/&gt;worth 1.17 MAE units&lt;br/&gt;MUST fit inside LOCO loop"]
+        C2["C2 zero floor&lt;br/&gt;14.3% of labels are 0&lt;br/&gt;clip or log1p"]
+        C3["C3 PURITY INVERSION&lt;br/&gt;skill NEGATIVE at high purity&lt;br/&gt;most serious defect"]
+        C4["C4 OV is n=10&lt;br/&gt;disclosure, not a code fix"]
+        C5["Re-run array, confirm&lt;br/&gt;skill improves"]
+        C1 --&gt; C5
+        C2 --&gt; C5
+        C3 --&gt; C5
+        C4 --&gt; C5
+    end
+
+    D3 --&gt; C1
+    D3 --&gt; C2
+    D3 --&gt; C3
+    D3 --&gt; C4
+
+    subgraph FINAL["STAGE 7B - FREEZE AND UNLOCK (NOT REACHED)"]
+        F1["Freeze model"]
+        F2["Open CNS lock ONCE&lt;br/&gt;score GBM + LGG&lt;br/&gt;642 held-out samples"]
+        F1 --&gt; F2
+    end
+
+    C5 --&gt; F1
+    S2 -.-&gt;|"opens only after C1-C4"| F2
+
+    subgraph INFER["STAGE 8 - INFERENCE (gated, B7 CLOSED)"]
         I1["scripts/predict_frozen.R"]
-        I2["PROVENANCE GATE — R/provenance.R&lt;br/&gt;runs BEFORE the matrix is read"]
+        I2["PROVENANCE GATE - R/provenance.R&lt;br/&gt;runs BEFORE matrix is read"]
         I3{"sidecar verdict"}
         I4["REFUSED: fixture / no sidecar /&lt;br/&gt;no allowlist hash"]
-        I5["Scored, stamped with&lt;br/&gt;matrix_provenance_class + probe_set_match"]
-        I6["app/app.R&lt;br/&gt;validates KIDS26_DEMO_RESULTS&lt;br/&gt;STRUCTURALLY ONLY,&lt;br/&gt;prints provenance verbatim"]
+        I5["Scored + stamped with&lt;br/&gt;matrix_provenance_class"]
+        I6["app/app.R - B10 governance&lt;br/&gt;still OPEN"]
         I1 --&gt; I2 --&gt; I3
         I3 --&gt;|fail| I4
         I3 --&gt;|pass| I5 --&gt; I6
     end
 
-    D2 --&gt; I1
+    F2 --&gt; I1
 
-    style MODEL fill:#fff3cd,stroke:#d39e00,stroke-width:4px
-    style M1 fill:#ffe08a
-    style S2 fill:#f8d7da,stroke:#b02a37,stroke-width:2px
-    style G2 fill:#d1e7dd,stroke:#0f5132,stroke-width:3px
-    style D3 fill:#f8d7da,stroke:#b02a37
-    style I2 fill:#cfe2ff,stroke:#084298,stroke-width:2px</code></pre>
+    style ACQ fill:#d4edda
+    style PREP fill:#d4edda
+    style LABEL fill:#d4edda
+    style MODEL fill:#d4edda
+    style WATCH fill:#d4edda
+    style MERGE fill:#d4edda
+    style DECIDE fill:#d4edda
+    style REPAIR fill:#fff3cd
+    style S2 fill:#f8d7da,stroke:#b02a37,stroke-width:3px
+    style D3 fill:#d1e7dd,stroke:#0f5132,stroke-width:4px
+    style G2 fill:#d1e7dd,stroke:#0f5132,stroke-width:2px
+    style G3 fill:#d1e7dd,stroke:#0f5132,stroke-width:2px
+    style C3 fill:#f8d7da,stroke:#b02a37,stroke-width:3px
+    style C1 fill:#ffe08a
+    style C2 fill:#ffe08a
+    style C4 fill:#ffe08a
+    style F2 fill:#f8d7da,stroke:#b02a37,stroke-width:2px
+    style I2 fill:#cfe2ff,stroke:#084298,stroke-width:2px
+    style I6 fill:#fff3cd</code></pre>
 <hr>
 </section>
-<section id="where-we-are-precisely" class="level2">
-<h2 class="anchored" data-anchor-id="where-we-are-precisely">2. Where we are, precisely</h2>
+<section id="stage-status-table" class="level2">
+<h2 class="anchored" data-anchor-id="stage-status-table">3. Stage status table</h2>
 <table class="caption-top table">
 <thead>
 <tr class="header">
 <th>Stage</th>
 <th>State</th>
+<th>Evidence</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
 <td>1 Acquisition</td>
-<td>Complete, checksum-verified</td>
+<td><strong>COMPLETE</strong></td>
+<td>checksum-verified, 41.5 GB</td>
 </tr>
 <tr class="even">
 <td>2 Feature prep</td>
-<td>Complete, <code>engineering_only: false</code></td>
+<td><strong>COMPLETE</strong></td>
+<td><code>engineering_only: false</code></td>
 </tr>
 <tr class="odd">
 <td>3 Labels</td>
-<td>Complete</td>
+<td><strong>COMPLETE</strong></td>
+<td><code>master_samples.tsv</code></td>
 </tr>
 <tr class="even">
 <td>4 Lock</td>
-<td>Applied; GBM+LGG untouched</td>
+<td><strong>APPLIED</strong></td>
+<td>GBM+LGG untouched</td>
 </tr>
 <tr class="odd">
-<td><strong>5 Nested LOCO CV</strong></td>
-<td><strong>RUNNING — 0/30 folds, 4 active, 26 queued</strong></td>
+<td>5 Nested LOCO CV</td>
+<td><strong>COMPLETE</strong></td>
+<td>30/30 DONE, 0 EXIT, 6.7 h</td>
 </tr>
 <tr class="even">
 <td>6 Merge</td>
-<td>Blocked until 30/30</td>
+<td><strong>COMPLETE</strong></td>
+<td>11 result files, 06:20</td>
 </tr>
 <tr class="odd">
 <td>7 Fork</td>
+<td><strong>RESOLVED — continue</strong></td>
+<td><code>docs/24</code> §6</td>
+</tr>
+<tr class="even">
+<td><strong>5B Repairs</strong></td>
+<td><strong>OPEN — next work</strong></td>
+<td>C1–C4 in <code>docs/21</code></td>
+</tr>
+<tr class="odd">
+<td>7B Freeze + unlock</td>
 <td>Not reached</td>
+<td>gated on C1–C4</td>
 </tr>
 <tr class="even">
 <td>8 Inference</td>
-<td>Code ready, gate closed, nothing scored yet</td>
+<td>Code ready, gate closed</td>
+<td>nothing scored yet</td>
 </tr>
 </tbody>
 </table>
-<p>Current fold assignment: tasks 1–4 = ACC, BLCA, BRCA, CESC. Measured cost per fold: 55.4 min wall, 173 GB peak, ~1 core busy (memory-bound, not CPU-bound). Four at a time gives roughly 8 h total.</p>
+<p>Measured cost: 55 min/fold, <strong>173 GB peak</strong> (vs 240 GB reserved), memory-bound not CPU-bound, 6.7 h wall for the full array.</p>
 <hr>
 </section>
-<section id="the-one-number-that-decides-the-project" class="level2">
-<h2 class="anchored" data-anchor-id="the-one-number-that-decides-the-project">3. The one number that decides the project</h2>
-<p><code>skill_vs_tissue_mean</code>, pooled across all 30 folds, written to <code>results/loco_run01/pooled_null_panel.tsv</code>.</p>
-<p>It asks: <strong>does the model beat simply guessing each cancer type’s average HRD score?</strong> If it does not, the model has likely learned to recognise tissue lineage from methylation — which methylation does extremely well — rather than HRD biology. <code>loco_merge.R</code> prints an explicit warning in that case.</p>
-<p>This number <strong>cannot</strong> be computed per fold. Inside one fold every sample is the same cancer type, so the tissue-mean null collapses to that fold’s own mean. Between-tissue variation only exists once folds are pooled. The ACC dry-run figure of −0.22 is therefore <strong>not</strong> evidence of failure; it is a number that does not yet mean anything.</p>
+<section id="what-now-needs-to-be-done-in-order" class="level2">
+<h2 class="anchored" data-anchor-id="what-now-needs-to-be-done-in-order">4. What now needs to be done, in order</h2>
+<ol type="1">
+<li><strong>C2 zero floor</strong> — cheapest fix, clip at 0 or <code>log1p</code>. Hours.</li>
+<li><strong>C1 per-tissue calibration</strong> — worth ~1.17 MAE. Must be fitted on training tissues only; a held-out tissue has no offset available, which is exactly the pediatric-transfer situation, so prefer a covariate or hierarchical form over a lookup table.</li>
+<li><strong>C3 purity inversion</strong> — the blocking scientific question. Skill is <em>negative</em> in the highest-purity third. Genuine biological signal should strengthen with purity, not weaken.</li>
+<li><strong>C4 OV disclosure</strong> — one paragraph in every presentation.</li>
+<li><strong>Re-run the array</strong> and confirm skill improves.</li>
+<li><strong>Freeze, then open the CNS lock once.</strong></li>
+<li><strong>B10 app governance</strong> before anything is demoed publicly.</li>
+</ol>
 <hr>
 </section>
 <section id="non-obvious-constraints" class="level2">
-<h2 class="anchored" data-anchor-id="non-obvious-constraints">4. Non-obvious constraints</h2>
+<h2 class="anchored" data-anchor-id="non-obvious-constraints">5. Non-obvious constraints</h2>
 <ul>
-<li><strong><code>rusage[mem]</code> is PER SLOT.</strong> LSF multiplies by <code>-n</code>. <code>60GB × 4 = 240GB</code>. Writing <code>230GB</code> with <code>-n 8</code> requests 1,840 GB, which silently pends forever rather than failing. Cost: one dead array (323078478).</li>
-<li><strong>The biohackathon queue is two nodes</strong>: <code>noderome117</code> (1,003 GB), <code>nodegpu217</code> (1,435 GB). <code>%4</code> fits either.</li>
-<li><strong>336,480 ≠ 384,640.</strong> The allowlist is 384,640; 336,480 is its intersection with probes actually present. Do not interchange these in the writeup.</li>
-<li><strong>Login node <code>nodelmr12</code> has ~3 GB free.</strong> Never load the matrix there.</li>
-<li><strong>Leakage rule.</strong> No feature screening on the full cohort, ever. All six learned quantities come from training rows only; <code>tests/smoke_model.R</code> asserts this executably.</li>
+<li><strong><code>rusage[mem]</code> is PER SLOT.</strong> LSF multiplies by <code>-n</code>. <code>60GB x 4 = 240GB</code>. Writing <code>230GB</code> with <code>-n 8</code> requests 1,840 GB and silently pends forever. Cost: one dead array (323078478).</li>
+<li><strong>The biohackathon queue is two nodes</strong>: <code>noderome117</code> (1,003 GB), <code>nodegpu217</code> (1,435 GB).</li>
+<li><strong>336,480 is not 384,640.</strong> The allowlist is 384,640; 336,480 is its intersection with probes actually present.</li>
+<li><strong>Login node <code>nodelmr12</code> has ~3 GB free.</strong> Never load the matrix there. The merge is safe because it reads per-fold summaries, not the matrix.</li>
+<li><strong>Leakage rule.</strong> No feature screening on the full cohort, ever. This constrains the C1 fix specifically.</li>
+<li><strong>The CNS lock opens exactly once.</strong> Every additional look erodes it.</li>
 </ul>
 </section>
 </section>

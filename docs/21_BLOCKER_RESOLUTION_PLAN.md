@@ -411,7 +411,7 @@ graph TD
     VERDICT -->|"NO — within-tissue r=0.61,<br/>perm p=0.001, 29/30 tissues"| CONTINUE["CONTINUE MODELLING<br/>reframed as within-tissue ranker"]
 
     CONTINUE --> C1["C1 per-tissue calibration<br/>ESCALATED - label-free<br/>approach FAILED, LOTO R2 negative"]
-    CONTINUE --> C2["C2 zero floor<br/>clip ADOPTED, log1p in flight"]
+    CONTINUE --> C2["C2 zero floor - RESOLVED<br/>clip ADOPTED, log1p REJECTED<br/>within-tissue r fell 0.612 to 0.522"]
     CONTINUE --> C3["C3 purity inversion<br/>DOWNGRADED - artefact of C1,<br/>partial cor went UP 0.612 to 0.621"]
     CONTINUE --> C4["C4 OV n=10 disclosure<br/>OPEN - 27k array excluded"]
 
@@ -538,13 +538,19 @@ emits negative predictions, inflating MAE with a priori impossible values.
 > 0.093, Spearman with the raw prediction exactly **1.000**, so no ranking
 > changes. 227 samples (3.2%) were negative, most extreme −11.53.
 >
-> **log1p provisional, full 30-fold run in flight** (array `323176856`, plus the
-> 4 folds from `323169191`). On the first 4 folds: sample-weighted MAE
-> **11.204 → 7.964**, with the largest gains on the quiet tumours the model was
-> over-predicting (THCA 8.28 → 1.99, PCPG 9.10 → 4.57). But within-tissue
-> correlation **falls** for BRCA (0.632 → 0.538) and UCEC (0.758 → 0.745) — the
-> trade-off lands in the clinically important direction. Pooled r barely moves,
-> 0.440 → 0.450.
+> **log1p REJECTED** after the full 30-fold run (arrays `323176856` +
+> `323169191`, 30/30, merged 2026-09-17). It improves the absolute metrics
+> (MAE 9.049 → 8.827, skill 0.085 → 0.108, zero negative predictions) but
+> **degrades within-tissue Pearson 0.6124 → 0.5221**, with correlation falling
+> in 20 of 30 tissues. The 4-fold preview understated this because it happened
+> to contain both tissues where log1p helps most.
+>
+> The losses land on BLCA, STAD, LUSC and ESCA — high-HRD tissues where
+> discrimination is the clinically useful task. Since C1 forces the project
+> toward **within-tissue ranking**, and ranking is measured by correlation,
+> log1p optimises the metric we must abandon at the cost of the one we must
+> rely on. Retained only as a documented option for the quiet-tumour regime
+> (THCA −0.032 → 0.171).
 >
 > Zero inflation is **not** addressed by log1p (it maps 0 → 0). A genuine
 > hurdle / two-part model is recorded as future work.
