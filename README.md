@@ -49,7 +49,7 @@ Rscript scripts/predict_frozen.R results/baseline/frozen_nonCNS.rds data/process
 Rscript -e "shiny::runApp('app')"
 ```
 
-The demo defaults to prominently labeled synthetic fixtures. To use approved outputs, set `KIDS26_DEMO_RESULTS` to a precomputed TSV with the documented schema, including a provenance column. No PBTP upload or publication is automated.
+The Shiny app now replaces the old methylation page with an **HRD Scores** page that loads `front_end_data/ddr_scars/` through `R/adapters/adapt_ddr_scores.R`. Launch it with `Rscript -e "shiny::runApp('app')"` after `Rscript scripts/setup.R` installs the app prerequisites (`VizModules`, `plotly`, `DT`, and `shinydashboard`). No PBTP upload or publication is automated.
 
 ## What exists now
 

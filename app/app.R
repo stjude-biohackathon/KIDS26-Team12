@@ -2,14 +2,89 @@ library(shiny)
 library(shinydashboard)
 library(VizModules)
 library(data.table)
+library(plotly)
+library(DT)
 
-source("/Users/sdowning/KIDS26-Team12/R/adapters/adapt_ddr_scores.R")
+app_repo_root <- function(start = getwd()) {
+  candidates <- unique(normalizePath(
+    c(start, file.path(start, ".."), file.path(start, "../..")),
+    winslash = "/",
+    mustWork = FALSE
+  ))
 
-ddr_data <- adapt_ddr_scores()
+  for (candidate in candidates) {
+    if (file.exists(file.path(candidate, "app", "app.R")) &&
+        file.exists(file.path(candidate, "R", "adapters", "adapt_ddr_scores.R"))) {
+      return(candidate)
+    }
+  }
 
-sample_data   <- unique(ddr_data[, .(sample_id, cancer_type, HRD_LOH, LST, TAI, HRDsum, purity, ploidy)])
-meth_data     <- unique(ddr_data[, .(sample_id, probe_id, gene, beta_value, cancer_type, HRDsum)])
-cancer_counts <- sample_data[, .N, by = cancer_type]
+  stop("Could not locate the repository root for the Shiny app.", call. = FALSE)
+}
+
+load_or_empty <- function(loader, fallback) {
+  tryCatch(
+    list(data = loader(), error = NULL),
+    error = function(err) list(data = fallback(), error = conditionMessage(err))
+  )
+}
+
+repo_root <- app_repo_root()
+source(file.path(repo_root, "R", "app_hrd_scores_helpers.R"), local = TRUE)
+source(file.path(repo_root, "R", "adapters", "adapt_ddr_scores.R"), local = TRUE)
+
+required_cols <- c("sample_id", "cancer_type", "HRDsum", "HRD_LOH", "LST", "TAI", "purity", "ploidy")
+empty_base_sample_data <- empty_hrd_scores_data()[, .(sample_id, cancer_type, HRDsum, HRD_LOH, LST, TAI, purity, ploidy)]
+
+base_sample_data <- function(ddr_data) {
+  if (is.null(ddr_data) || !nrow(ddr_data)) {
+    return(copy(empty_base_sample_data))
+  }
+
+  missing_cols <- setdiff(required_cols, names(ddr_data))
+  if (length(missing_cols)) {
+    stop(
+      "DDR input is missing required columns: ",
+      paste(missing_cols, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  sample_data <- unique(as.data.table(ddr_data)[, ..required_cols])
+  setorder(sample_data, sample_id)
+  sample_data
+}
+
+no_data_ui <- function(title, detail) {
+  div(
+    style = "padding: 30px; background: #fff; border-radius: 4px; margin: 15px;",
+    h4(title, style = "color: #1b2a4a;"),
+    p(detail, style = "margin-bottom: 0;")
+  )
+}
+
+ddr_load <- load_or_empty(adapt_ddr_scores, data.table)
+ddr_data <- ddr_load$data
+
+ddr_load_error <- ddr_load$error
+sample_load <- load_or_empty(function() base_sample_data(ddr_data), function() copy(empty_base_sample_data))
+sample_data <- sample_load$data
+if (is.null(ddr_load_error)) {
+  ddr_load_error <- sample_load$error
+}
+
+display_load <- load_or_empty(function() prepare_hrd_scores_data(ddr_data), empty_hrd_scores_data)
+display_data <- display_load$data
+if (is.null(ddr_load_error)) {
+  ddr_load_error <- display_load$error
+}
+
+cancer_counts <- if (nrow(sample_data)) sample_data[, .N, by = cancer_type] else data.table(cancer_type = character(), N = integer())
+
+has_sample_data <- nrow(sample_data) > 0
+has_display_data <- nrow(display_data) > 0
+hrd_scores_defaults <- list("x.by" = "HRDsum", "y.by" = "epi_HRD", "color.by" = "cancer_type")
+hrd_component_colors <- c(HRD_LOH = "#1B9E77", LST = "#D95F02", TAI = "#7570B3")
 
 logo_svg <- HTML('
 <svg width="40" height="40" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -29,19 +104,16 @@ logo_svg <- HTML('
 
 ui <- dashboardPage(
   skin = "red",
-
   dashboardHeader(title = span(logo_svg, " Genomic SCARS")),
-
   dashboardSidebar(
     sidebarMenu(
       id = "tabs",
       menuItem("Welcome", tabName = "welcome", icon = icon("home")),
       menuItem("HRD (Genome)", tabName = "hrd", icon = icon("dna")),
-      menuItem("Methylation", tabName = "meth", icon = icon("flask")),
+      menuItem("HRD Scores", tabName = "hrd_scores", icon = icon("table")),
       menuItem("Transcriptomics", tabName = "trans", icon = icon("chart-bar"))
     )
   ),
-
   dashboardBody(
     tags$head(tags$style(HTML('
       .skin-red .main-header .navbar { background-color: #1b2a4a; }
@@ -51,7 +123,6 @@ ui <- dashboardPage(
       .skin-red .sidebar-menu > li.active > a { background-color: #c41230; color: #fff; }
       .skin-red .sidebar-menu > li > a:hover { background-color: #2a3f6a; color: #fff; }
       .content-wrapper { background-color: #f5f5f5; }
-
       .nav-tabs > li > a { color: #1b2a4a; }
       .nav-tabs > li.active > a,
       .nav-tabs > li.active > a:hover,
@@ -60,68 +131,121 @@ ui <- dashboardPage(
         border-bottom: 2px solid #c41230;
       }
     '))),
-
     tabItems(
-
-      tabItem(tabName = "welcome",
+      tabItem(
+        tabName = "welcome",
         div(style = "padding: 40px; max-width: 800px; margin: auto; text-align: center;",
           div(style = "display: flex; justify-content: center;", logo_svg),
           h1("Genomic SCARS", style = "font-weight: bold; letter-spacing: 2px; color: #1b2a4a;"),
-          h4("Assessing HRD Across Genome, Methylation & Transcriptome",
+          h4("Assessing HRD Across Genome, Scores & Transcriptome",
              style = "color: #666; font-weight: normal;"),
           hr(),
           p(style = "text-align: left; font-size: 16px; line-height: 1.6;",
-            "This app explores HRD (Homologous Recombination Deficiency) signals in
-             pediatric and pan-cancer WGS data. HRDsum combines three genomic scar
-             signatures - LOH, LST, and TAI - that together indicate a tumor's loss
-             of homologous recombination repair capacity."
+            "This app explores HRD (Homologous Recombination Deficiency) signals in pediatric and pan-cancer WGS data. HRDsum combines three genomic scar signatures - LOH, LST, and TAI - that together indicate a tumor's loss of homologous recombination repair capacity."
           ),
           p(style = "text-align: left; font-size: 16px; line-height: 1.6;",
-            "Use the sidebar to move between genome, methylation, and transcriptome
-             HRD views. Each page has its own set of visualization tabs."
+            "Use the sidebar to move between genome, HRD score, and transcriptome views. The HRD Scores page compares genomic HRDsum with reproducibly simulated epi_HRD values for a display subset of samples."
           )
         )
       ),
-
-      tabItem(tabName = "hrd",
-        tabsetPanel(
-          tabPanel("HRDsum by Cancer Type",
-            plotthis_BoxPlotInputsUI("hrdsum_box", data = sample_data),
-            plotthis_BoxPlotOutputUI("hrdsum_box")
-          ),
-          tabPanel("HRD Sub-Scores",
-            plotthis_BoxPlotInputsUI("subscore_box", data = sample_data),
-            plotthis_BoxPlotOutputUI("subscore_box")
-          ),
-          tabPanel("Purity vs HRDsum",
-            dittoViz_scatterPlotInputsUI("purity_scatter", data = sample_data),
-            dittoViz_scatterPlotOutputUI("purity_scatter")
-          ),
-          tabPanel("Ploidy vs HRDsum",
-            dittoViz_scatterPlotInputsUI("ploidy_scatter", data = sample_data),
-            dittoViz_scatterPlotOutputUI("ploidy_scatter")
-          ),
-          tabPanel("Sample Counts",
-            plotthis_BarPlotInputsUI("cancer_bar", data = cancer_counts),
-            plotthis_BarPlotOutputUI("cancer_bar")
+      tabItem(
+        tabName = "hrd",
+        if (has_sample_data) {
+          tabsetPanel(
+            tabPanel("HRDsum by Cancer Type",
+              plotthis_BoxPlotInputsUI("hrdsum_box", data = sample_data),
+              plotthis_BoxPlotOutputUI("hrdsum_box")
+            ),
+            tabPanel("HRD Sub-Scores",
+              plotthis_BoxPlotInputsUI("subscore_box", data = sample_data),
+              plotthis_BoxPlotOutputUI("subscore_box")
+            ),
+            tabPanel("Purity vs HRDsum",
+              dittoViz_scatterPlotInputsUI("purity_scatter", data = sample_data),
+              dittoViz_scatterPlotOutputUI("purity_scatter")
+            ),
+            tabPanel("Ploidy vs HRDsum",
+              dittoViz_scatterPlotInputsUI("ploidy_scatter", data = sample_data),
+              dittoViz_scatterPlotOutputUI("ploidy_scatter")
+            ),
+            tabPanel("Sample Counts",
+              plotthis_BarPlotInputsUI("cancer_bar", data = cancer_counts),
+              plotthis_BarPlotOutputUI("cancer_bar")
+            )
           )
-        )
-      ),
-
-      tabItem(tabName = "meth",
-        tabsetPanel(
-          tabPanel("Methylation by Gene",
-            plotthis_BoxPlotInputsUI("meth_box", data = meth_data),
-            plotthis_BoxPlotOutputUI("meth_box")
-          ),
-          tabPanel("Methylation vs HRDsum",
-            dittoViz_scatterPlotInputsUI("meth_hrd_scatter", data = meth_data),
-            dittoViz_scatterPlotOutputUI("meth_hrd_scatter")
+        } else {
+          no_data_ui(
+            "Genome HRD data unavailable",
+            if (!is.null(ddr_load_error) && nzchar(ddr_load_error)) ddr_load_error else "No DDR score data were loaded."
           )
-        )
+        }
       ),
-
-      tabItem(tabName = "trans",
+      tabItem(
+        tabName = "hrd_scores",
+        if (has_display_data) {
+          fluidRow(
+            box(
+              width = 12,
+              title = "HRD Scores controls",
+              status = "primary",
+              solidHeader = TRUE,
+              radioButtons(
+                "hrd_sample_mode",
+                "Samples to display",
+                choices = c(
+                  "All display-subset samples" = "all",
+                  "User-selected samples" = "selected"
+                ),
+                selected = "all",
+                inline = TRUE
+              ),
+              selectizeInput(
+                "hrd_selected_samples",
+                "User-selected samples",
+                choices = display_data$sample_id,
+                selected = NULL,
+                multiple = TRUE,
+                options = list(placeholder = "Select samples to focus the HRD Scores outputs")
+              ),
+              helpText(sprintf(
+                "A reproducible random display subset of %d sample%s is shown here (maximum 500 rows).",
+                nrow(display_data),
+                if (nrow(display_data) == 1) "" else "s"
+              )),
+              uiOutput("hrd_scores_status")
+            ),
+            box(
+              width = 12,
+              tabsetPanel(
+                tabPanel(
+                  "Scatter Plot",
+                  dittoViz_scatterPlotInputsUI(
+                    "hrd_scores_scatter",
+                    data = display_data,
+                    defaults = hrd_scores_defaults
+                  ),
+                  dittoViz_scatterPlotOutputUI("hrd_scores_scatter")
+                ),
+                tabPanel(
+                  "HRD Components",
+                  plotlyOutput("hrd_component_bar", height = "600px")
+                ),
+                tabPanel(
+                  "Sample Table",
+                  DTOutput("hrd_scores_table")
+                )
+              )
+            )
+          )
+        } else {
+          no_data_ui(
+            "HRD Scores data unavailable",
+            if (!is.null(ddr_load_error) && nzchar(ddr_load_error)) ddr_load_error else "No DDR score rows were available after loading."
+          )
+        }
+      ),
+      tabItem(
+        tabName = "trans",
         div(style = "padding: 40px; color: #888;",
           h3("Transcriptomics x HRD", style = "color: #1b2a4a;"),
           p("Pending exp-HRD data. Tabs will be added here once available.")
@@ -132,13 +256,100 @@ ui <- dashboardPage(
 )
 
 server <- function(input, output, session) {
-  plotthis_BoxPlotServer("hrdsum_box", data = reactive(sample_data))
-  plotthis_BoxPlotServer("subscore_box", data = reactive(sample_data))
-  dittoViz_scatterPlotServer("purity_scatter", data = reactive(sample_data))
-  dittoViz_scatterPlotServer("ploidy_scatter", data = reactive(sample_data))
-  plotthis_BoxPlotServer("meth_box", data = reactive(meth_data))
-  dittoViz_scatterPlotServer("meth_hrd_scatter", data = reactive(meth_data))
-  plotthis_BarPlotServer("cancer_bar", data = reactive(cancer_counts))
+  if (has_sample_data) {
+    plotthis_BoxPlotServer("hrdsum_box", data = reactive(sample_data))
+    plotthis_BoxPlotServer("subscore_box", data = reactive(sample_data))
+    dittoViz_scatterPlotServer("purity_scatter", data = reactive(sample_data))
+    dittoViz_scatterPlotServer("ploidy_scatter", data = reactive(sample_data))
+    plotthis_BarPlotServer("cancer_bar", data = reactive(cancer_counts))
+  }
+
+  if (has_display_data) {
+    active_hrd_scores <- reactive({
+      filter_hrd_scores_data(
+        display_data,
+        sample_ids = input$hrd_selected_samples,
+        sample_mode = if (is.null(input$hrd_sample_mode)) "all" else input$hrd_sample_mode
+      )
+    })
+
+    output$hrd_scores_status <- renderUI({
+      active <- active_hrd_scores()
+
+      if (identical(input$hrd_sample_mode, "selected")) {
+        if (length(active$unavailable)) {
+          return(tags$p(
+            style = "color: #c41230; margin-top: 10px;",
+            paste(
+              "These selected samples are not in the display subset and were skipped:",
+              paste(active$unavailable, collapse = ", ")
+            )
+          ))
+        }
+
+        if (!nrow(active$data)) {
+          return(tags$p(
+            style = "color: #666; margin-top: 10px;",
+            "Select one or more samples from the display subset to populate the plots and table."
+          ))
+        }
+      }
+
+      tags$p(
+        style = "color: #666; margin-top: 10px;",
+        sprintf("Displaying %d sample%s.", nrow(active$data), if (nrow(active$data) == 1) "" else "s")
+      )
+    })
+
+    dittoViz_scatterPlotServer(
+      "hrd_scores_scatter",
+      data = reactive(active_hrd_scores()$data),
+      defaults = hrd_scores_defaults
+    )
+
+    output$hrd_component_bar <- renderPlotly({
+      active <- active_hrd_scores()$data
+      validate(need(nrow(active) > 0, "No samples available for the HRD component chart."))
+
+      plot_data <- hrd_component_data(active)
+      chart <- plot_ly(
+        data = plot_data,
+        x = ~sample_id,
+        y = ~score,
+        color = ~component,
+        colors = hrd_component_colors,
+        type = "bar",
+        hovertemplate = paste(
+          "Sample: %{x}",
+          "<br>Component: %{fullData.name}",
+          "<br>Score: %{y}",
+          "<extra></extra>"
+        )
+      )
+      layout(
+        chart,
+        barmode = "stack",
+        xaxis = list(
+          title = "Sample",
+          categoryorder = "array",
+          categoryarray = levels(plot_data$sample_id),
+          tickangle = -45
+        ),
+        yaxis = list(title = "HRD component score"),
+        legend = list(title = list(text = "Component"))
+      )
+    })
+
+    output$hrd_scores_table <- renderDT({
+      active <- active_hrd_scores()$data
+      datatable(
+        active,
+        filter = "top",
+        rownames = FALSE,
+        options = list(pageLength = 25, scrollX = TRUE)
+      )
+    })
+  }
 }
 
 shinyApp(ui, server)
