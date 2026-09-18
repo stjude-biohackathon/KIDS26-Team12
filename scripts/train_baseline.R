@@ -204,11 +204,14 @@ out <- args[3];dir.create(out,recursive=TRUE,showWarnings=FALSE)
 # eventual pediatric high-grade glioma transfer question. They are never fitted
 # and never scored in this script.
 #
-# NOTE: this re-derives the lock from a hardcoded cancer-type list rather than
-# reading the `partition` column that build_master.py already wrote. The two
-# agree today (verified: 642 locked_CNS rows, exactly GBM+LGG, zero anomalies),
-# but they are two sources of truth that could drift. Reading partition and
-# stopifnot()-ing agreement would be safer.
+# NOTE: this re-derives the lock from a hardcoded cancer-type list. It is no
+# longer the only authority: assert_partition_matches_cns() (R/model.R) now
+# compares it row-for-row against the `partition` column build_master.py wrote,
+# in both directions, and stops on any disagreement. The two agreed when this
+# was written (642 locked_CNS rows, exactly GBM+LGG); the assertion is what
+# keeps that true rather than a comment claiming it.
+assert_partition_matches_cns(meta$cancer_type, meta$partition,
+                             context = basename(args[2]))
 cns <- meta$cancer_type %in% c("GBM","LGG")
 
 # Anti-fixture guards: refuse to make transfer claims from a toy cohort.

@@ -964,3 +964,114 @@ purity_matched_subset <- function(y,pred,purity,cancer,lower=0.5,upper=0.8,train
         null_panel(y[i],pred[i],cancer[i],training_mean),
         within_tissue_metrics(y[i],pred[i],cancer[i])[,c("within_Pearson","within_Spearman")])
 }
+
+
+# =============================================================================
+# THE LOCK: one source of truth for which samples are locked
+# =============================================================================
+# The locked CNS partition is spelled out in SIX places (train_baseline.R,
+# loco_one_fold.R, c1_rank_one_fold.R, loco_merge.R, R/rank_model.R and
+# config/analysis_protocol.json) as the hardcoded list c("GBM","LGG"), while
+# data/processed/master_samples.tsv carries an independent `partition` column
+# written by scripts/build_master.py. Two sources of truth that are never
+# compared will eventually disagree, and the failure is silent in the worst
+# possible direction: a locked sample entering development, or a development
+# sample being withheld from a fold that claims to have used it.
+#
+# CNS_LOCKED_TYPES is the canonical constant (R/rank_model.R's CNS_LOCKED is now
+# an alias of it), and assert_partition_matches_cns() is the executable
+# comparison. It does NOT change which samples are locked - it refuses to
+# proceed when the two definitions disagree.
+CNS_LOCKED_TYPES <- c("GBM", "LGG")
+CNS_LOCKED_LABEL <- "locked_CNS"
+DEVELOPMENT_LABEL <- "development"
+
+# -----------------------------------------------------------------------------
+# assert_partition_matches_cns(): the hardcoded list and the column must AGREE.
+# -----------------------------------------------------------------------------
+# Errors unless the agreement is exact and two-way:
+#   * every row whose cancer_type is in `locked_types` has partition == locked
+#   * every row whose partition is locked has a cancer_type in `locked_types`
+# Also refuses NA/blank partitions and labels outside {locked, development},
+# both of which make the column unusable as an authority.
+#
+# `require_partition = TRUE` (the default) makes a MISSING column fatal too: a
+# master table that cannot state its own partition is exactly the drift this
+# assertion exists to catch. Callers holding a legacy table can pass FALSE, and
+# get a warning instead.
+assert_partition_matches_cns <- function(cancer_type, partition,
+                                         locked_types = CNS_LOCKED_TYPES,
+                                         locked_label = CNS_LOCKED_LABEL,
+                                         development_label = DEVELOPMENT_LABEL,
+                                         require_partition = TRUE,
+                                         context = "master table") {
+  if (is.null(partition)) {
+    msg <- sprintf(paste0("No `partition` column in %s, so the hardcoded locked list (%s) ",
+                          "cannot be checked against it. Rebuild with scripts/build_master.py."),
+                   context, paste(locked_types, collapse = "/"))
+    if (require_partition) stop(msg, call. = FALSE)
+    warning(msg, call. = FALSE)
+    return(invisible(FALSE))
+  }
+  cancer_type <- as.character(cancer_type)
+  partition   <- as.character(partition)
+  if (length(cancer_type) != length(partition)) {
+    stop(sprintf("cancer_type (%d) and partition (%d) differ in length in %s",
+                 length(cancer_type), length(partition), context), call. = FALSE)
+  }
+  bad_na <- is.na(partition) | !nzchar(trimws(partition))
+  if (any(bad_na)) {
+    stop(sprintf("%d row(s) in %s have a missing/blank partition; the lock is unverifiable.",
+                 sum(bad_na), context), call. = FALSE)
+  }
+  unknown <- setdiff(unique(partition), c(locked_label, development_label))
+  if (length(unknown)) {
+    stop(sprintf("Unrecognised partition label(s) in %s: %s. Expected only '%s' or '%s'.",
+                 context, paste(unknown, collapse = ", "), locked_label, development_label),
+         call. = FALSE)
+  }
+  by_type      <- cancer_type %in% locked_types
+  by_partition <- partition == locked_label
+  if (!identical(by_type, by_partition)) {
+    locked_type_not_partition <- sort(unique(cancer_type[by_type & !by_partition]))
+    locked_partition_not_type <- sort(unique(cancer_type[!by_type & by_partition]))
+    stop(sprintf(paste0("LOCK MISMATCH in %s: the hardcoded CNS list and the `partition` column disagree.\n",
+                        "  %d row(s) have cancer_type in {%s} but partition != '%s' (types: %s)\n",
+                        "  %d row(s) have partition == '%s' but a cancer_type outside that list (types: %s)\n",
+                        "  Refusing to proceed: which samples are locked must not be ambiguous."),
+                 context,
+                 sum(by_type & !by_partition), paste(locked_types, collapse = ", "), locked_label,
+                 if (length(locked_type_not_partition)) paste(locked_type_not_partition, collapse = ", ") else "-",
+                 sum(!by_type & by_partition), locked_label,
+                 if (length(locked_partition_not_type)) paste(locked_partition_not_type, collapse = ", ") else "-"),
+         call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+
+# -----------------------------------------------------------------------------
+# tissue_identity_r2(): how much of a quantity is explained by tissue alone.
+# -----------------------------------------------------------------------------
+# R^2 of values ~ factor(cancer_type). For the PREDICTION this is the headline
+# lineage-confounding number (56.2% in run 01); for the OBSERVED label it is the
+# reference point that says how much of that is a property of HRD itself rather
+# than of the model. Quoting either alone is misleading, so loco_merge.R now
+# ships both on every run instead of the number existing only inside
+# scripts/c1_zeroshot_percentile.R.
+#
+# Computed as 1 - SS_within/SS_total directly (identical to
+# summary(lm(y ~ factor(cancer)))$r.squared but without fitting a design matrix
+# with one column per tissue). Returns NA rather than erroring on degenerate
+# input: zero total variance, fewer than two tissues, or fewer than three rows.
+tissue_identity_r2 <- function(values, cancer) {
+  ok <- is.finite(values)
+  values <- values[ok]; cancer <- as.character(cancer)[ok]
+  n <- length(values)
+  if (n < 3L || length(unique(cancer)) < 2L) return(NA_real_)
+  ss_tot <- sum((values - mean(values))^2)
+  if (!(ss_tot > 0)) return(NA_real_)
+  ss_within <- sum(vapply(split(values, cancer),
+                          function(v) sum((v - mean(v))^2), numeric(1)))
+  1 - ss_within/ss_tot
+}

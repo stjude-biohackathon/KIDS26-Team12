@@ -100,6 +100,13 @@ if (!all(abs(meta$HRDsum - meta$HRD_LOH - meta$LST - meta$TAI) < 1e-6)) stop("La
 # sort() must match train_baseline.R exactly, or task N here would not be the
 # same fold as iteration N there.
 cns <- meta$cancer_type %in% c("GBM","LGG")
+# DEFECT 3: the hardcoded list above and the `partition` column that
+# build_master.py writes are two sources of truth for the SAME lock. Compare
+# them before either is used. This changes nothing about which samples are
+# locked; it refuses to run when the two definitions disagree, which is the only
+# situation in which the hardcoded list could silently be wrong.
+assert_partition_matches_cns(meta$cancer_type, meta$partition,
+                             context = basename(meta_path))
 types <- sort(unique(meta$cancer_type[!cns]))
 if (fold_index > length(types)) {
   stop(sprintf("fold_index %d exceeds the %d development cancer types", fold_index, length(types)))

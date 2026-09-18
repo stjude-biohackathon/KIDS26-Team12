@@ -93,6 +93,11 @@ if (any(!is.finite(meta$HRDsum)) || any(meta$HRDsum < 0)) stop("Invalid target")
 # LOCKED PARTITION - ASSERTED BEFORE ANY TRANSFORM, FIT, OR SUMMARY
 # =============================================================================
 cns <- meta$cancer_type %in% c("GBM","LGG")
+# DEFECT 3: assert the hardcoded list agrees EXACTLY with the `partition` column
+# before the mask is used for anything. Two sources of truth that never meet
+# will drift; this is where they meet.
+assert_partition_matches_cns(meta$cancer_type, meta$partition,
+                             context = basename(meta_path))
 types <- sort(unique(meta$cancer_type[!cns]))
 if (fold_index > length(types)) {
   stop(sprintf("fold_index %d exceeds the %d development cancer types", fold_index, length(types)))

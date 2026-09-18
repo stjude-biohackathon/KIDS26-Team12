@@ -169,6 +169,99 @@ z_tr <- apply_preprocess(x_tr, pp_tr, FALSE)
 y_tr <- 10*x_tr[,1] - 5*x_tr[,2] + rnorm(60)
 stopifnot(identical(lambda_path(z_tr, y_tr, 0.5), lambda_path(z_tr, y_tr, 0.5)))
 
+# =============================================================================
+# Check 8: THE LOCK HAS ONE SOURCE OF TRUTH (defect 3)
+# =============================================================================
+# c("GBM","LGG") is hardcoded in six places while master_samples.tsv carries an
+# independent `partition` column. assert_partition_matches_cns() is the
+# executable comparison of the two. Each REJECT below is paired with an ACCEPT
+# differing in ONE property, so a function that always errored (or always
+# passed) would fail this block - the B5 rule in docs/21.
+ct <- c("BRCA","BRCA","LUAD","GBM","LGG")
+pt <- c("development","development","development","locked_CNS","locked_CNS")
+
+# 8a. ACCEPT: the two definitions agree exactly.
+stopifnot(isTRUE(assert_partition_matches_cns(ct, pt)))
+
+# 8b. REJECT: a locked cancer type labelled development. This is the drift that
+#     would put GBM into a training fold while the fold's own mask believed it
+#     had excluded it.
+pt_bad <- pt; pt_bad[4] <- "development"
+stopifnot(inherits(try(assert_partition_matches_cns(ct, pt_bad), silent=TRUE), "try-error"))
+
+# 8c. REJECT: the mirror image - a development cancer labelled locked_CNS. The
+#     assertion must be two-way, or a tissue could be silently withheld from a
+#     run that claims 30 folds.
+pt_bad2 <- pt; pt_bad2[1] <- "locked_CNS"
+stopifnot(inherits(try(assert_partition_matches_cns(ct, pt_bad2), silent=TRUE), "try-error"))
+
+# 8d. REJECT: missing / blank / unrecognised partition values. A column that
+#     cannot be read is not an authority, and NA must not silently mean
+#     "development".
+stopifnot(
+  inherits(try(assert_partition_matches_cns(ct, replace(pt, 1, NA)), silent=TRUE), "try-error"),
+  inherits(try(assert_partition_matches_cns(ct, replace(pt, 1, "")), silent=TRUE), "try-error"),
+  inherits(try(assert_partition_matches_cns(ct, replace(pt, 1, "held_out")), silent=TRUE), "try-error"))
+
+# 8e. REJECT: no partition column at all (the default), but ACCEPT under an
+#     explicit require_partition=FALSE. The pair proves the default is doing
+#     work rather than the function ignoring NULL.
+stopifnot(
+  inherits(try(assert_partition_matches_cns(ct, NULL), silent=TRUE), "try-error"),
+  isFALSE(suppressWarnings(assert_partition_matches_cns(ct, NULL, require_partition=FALSE))))
+
+# 8f. REJECT: length mismatch, which would otherwise recycle and compare the
+#     wrong rows against each other.
+stopifnot(inherits(try(assert_partition_matches_cns(ct, pt[1:3]), silent=TRUE), "try-error"))
+
+# 8g. The rank-model alias must BE the canonical constant, not a copy that can
+#     drift from it. This is the check that would catch someone re-adding a
+#     second literal c("GBM","LGG") in R/rank_model.R.
+rank_src <- paste(readLines("R/rank_model.R", warn=FALSE), collapse="\n")
+stopifnot(grepl("CNS_LOCKED <- CNS_LOCKED_TYPES", rank_src),
+          identical(CNS_LOCKED_TYPES, c("GBM","LGG")))
+
+# 8h. END-TO-END on the real master table if it is present: the shipped cohort
+#     must satisfy its own lock assertion. Reads only cancer_type and partition;
+#     no HRDsum value is read or printed.
+if (file.exists("data/processed/master_samples.tsv")) {
+  m <- read.delim("data/processed/master_samples.tsv", check.names=FALSE, stringsAsFactors=FALSE)
+  stopifnot(isTRUE(assert_partition_matches_cns(m$cancer_type, m$partition)))
+  cat(sprintf("  (real master table: %d locked_CNS rows agree with the hardcoded list)\n",
+              sum(m$partition == "locked_CNS")))
+}
+
+# =============================================================================
+# Check 9: tissue_identity_r2() (defect 4)
+# =============================================================================
+# The lineage-confounding number. It must be both SENSITIVE (detect a quantity
+# that is purely tissue level) and SPECIFIC (not manufacture confounding from
+# tissue-independent noise) - otherwise shipping it on every run would be
+# shipping a constant.
+set.seed(9155)
+ct9 <- rep(c("A","B","C"), each=40)
+
+# 9a. Pure tissue effect: R2 must be ~1.
+stopifnot(abs(tissue_identity_r2(rep(c(1,5,9), each=40), ct9) - 1) < 1e-10)
+
+# 9b. Tissue-independent noise: R2 must be near 0, and materially below 9a.
+r2_noise <- tissue_identity_r2(rnorm(120), ct9)
+stopifnot(r2_noise < 0.1, r2_noise >= 0)
+
+# 9c. It must agree with lm() to floating-point, since that is the definition
+#     scripts/c1_zeroshot_percentile.R used and the number must be comparable.
+v9 <- rnorm(120) + rep(c(0, 2, 6), each=40)
+stopifnot(isTRUE(all.equal(tissue_identity_r2(v9, ct9),
+                           summary(lm(v9 ~ factor(ct9)))$r.squared, tolerance=1e-10)))
+
+# 9d. Degenerate input returns NA rather than erroring or returning a number:
+#     one tissue, constant values, or too few rows.
+stopifnot(is.na(tissue_identity_r2(v9, rep("A",120))),
+          is.na(tissue_identity_r2(rep(3,120), ct9)),
+          is.na(tissue_identity_r2(c(1,2), c("A","B"))))
+
 cat("R preprocessing/grouping/order/single-sample/conformal smoke tests passed\n")
 cat("Leakage assertions passed: preprocessing constants are training-only,\n")
 cat("  applied unchanged to held-out data, and aligned by feature name.\n")
+cat("Lock assertions passed: the hardcoded CNS list and the partition column\n")
+cat("  must agree in BOTH directions; tissue-identity R2 is sensitive and specific.\n")

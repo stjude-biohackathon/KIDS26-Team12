@@ -88,7 +88,12 @@ source("R/model.R")   # fit_preprocess / apply_preprocess / inner_folds /
 # (in particular anything mentioning absolute HRDsum) is a bug, and fit_rank_en()
 # asserts on this constant.
 RELATIVE_LOSS_COLUMN <- "inner_macro_relative_MAE"
-CNS_LOCKED <- c("GBM", "LGG")
+# ALIAS, not a second definition. The canonical list now lives in R/model.R as
+# CNS_LOCKED_TYPES, alongside assert_partition_matches_cns() which checks it
+# against master_samples.tsv's `partition` column. Keeping the old name means
+# existing callers (and tests/test_c1_rank_model.R) are unchanged, while there
+# is only one place the list can be edited.
+CNS_LOCKED <- CNS_LOCKED_TYPES
 
 
 # -----------------------------------------------------------------------------
