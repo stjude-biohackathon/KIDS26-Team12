@@ -1,0 +1,104 @@
+#!/bin/bash
+#BSUB -J kids26_freeze
+#BSUB -q priority
+#BSUB -n 4
+#BSUB -R "span[hosts=1] rusage[mem=60GB]"
+#BSUB -M 240GB
+#BSUB -W 8:00
+#BSUB -o logs/freeze_%J.out
+#BSUB -e logs/freeze_%J.err
+# =============================================================================
+# KIDS26 Team 12 - FREEZE THE SHIPPING MODEL (single job, not an array).
+# =============================================================================
+#
+# WHAT THIS RUNS
+#   scripts/freeze_final_model.R: ONE elastic-net fit on ALL 7,065 development
+#   samples across the 30 non-CNS cancer types, plus a split-conformal interval
+#   from a stratified 20% calibration reservation, frozen to
+#   results/frozen_2026-09-18/frozen_nonCNS.rds.
+#
+#   This is the artefact scripts/predict_frozen.R will use to score the locked
+#   GBM/LGG cohort exactly once. Everything downstream today waits on it.
+#
+# WHY IT IS ONE TASK AND NOT AN ARRAY
+#   There is only one fit. The 30-fold LOCO evaluation of this architecture
+#   already exists (run 01, array 323078995, results/loco_run01) and is NOT
+#   re-run here - that would cost most of a day and change nothing about the
+#   artefact. The freeze is Phase 2 of scripts/train_baseline.R in isolation.
+#
+# ARCHITECTURE - identical to run 01, deliberately
+#   feature_rank="pooled" (NOT V3-abs/within_tissue), identity target at fit
+#   time with C2 non-negativity clipping at prediction time (recorded in the
+#   bundle as target_transform="clip"), inner folds = one per training cancer
+#   type, seed 260910.
+#
+# THE LOCK
+#   GBM + LGG (642 rows) are excluded from fitting, preprocessing, feature
+#   selection, hyperparameter selection AND conformal calibration. The script
+#   hard-stops via assert_partition_matches_cns() plus an explicit post-split
+#   leak assertion before glmnet is ever called. Their HRDsum is never read.
+#   No --locked-evaluation opt-in exists here because this job does not score.
+#
+# RESOURCES
+#   *** rusage[mem] ON THIS CLUSTER IS PER SLOT, NOT PER JOB. ***
+#   60 GB x 4 slots = 240 GB reserved, matching -M. The measured peak for an
+#   equivalent single-fit LOCO fold was 173 GB (job 323075937), so this carries
+#   ~39% headroom. Do not raise -n without lowering rusage[mem] to match, or the
+#   job sits PENDING forever and it looks like a busy queue.
+#
+#   -W 8:00 is generous on purpose. A LOCO fold is 45-55 min on a quiet node
+#   (65-85 min under shared load) and this fit is the same shape - ~5,652
+#   training rows and 30 inner folds, versus ~6,800 rows and 29 inner folds for
+#   a fold. Expect roughly 60-90 min. The wall limit exists so a slow node
+#   cannot kill the critical-path artefact.
+#
+# QUEUE CHOICE - priority, NOT biohackathon
+#   biohackathon has only ~2 usable nodes. priority maps to rhel8_rome: 46 nodes
+#   at 1,003 GB and 14 at 1.9 TB, so a 240 GB job places immediately. Job
+#   323220006 (4 V3 sentinel tasks) is already running there with capacity to
+#   spare.
+#
+# SUBMIT
+#   bsub < scripts/lsf_freeze.bsub
+#
+# MONITOR
+#   bjobs -w
+#   tail -f logs/freeze_<JOBID>.out
+#
+# AFTER IT COMPLETES
+#   Check results/frozen_2026-09-18/freeze_manifest.tsv (artifact_sha256,
+#   n_nonzero_coefficients, conformal_q) and confirm final_partitions.tsv shows
+#   642 locked_CNS rows in role locked_CNS and zero anywhere else. Only then
+#   score the locked cohort, once, with scripts/predict_frozen.R.
+# =============================================================================
+
+set -euo pipefail
+
+REPO=/research/groups/shelagrp/home/esavage/KIDS26/KIDS26-Team12
+BETA=data/processed/beta.tsv
+META=data/processed/master_samples.tsv
+OUT=results/frozen_2026-09-18
+
+cd "$REPO"
+mkdir -p logs "$OUT"
+
+echo "=== freeze job ${LSB_JOBID:-local} on $(hostname) ==="
+echo "started: $(date)"
+echo "git commit: $(git rev-parse HEAD)"
+free -g | head -2
+echo
+
+# Pin thread counts to the slots LSF granted, so R's BLAS does not spawn one
+# thread per physical core (up to 128 on some rome nodes) and oversubscribe.
+export OMP_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export OPENBLAS_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export MKL_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+
+# No --allow-fixture. The provenance gate MUST be able to stop this job: the
+# whole point of the artefact is that it was fitted on the verified research
+# matrix, and a fixture freeze would be schema-identical to the real one.
+Rscript scripts/freeze_final_model.R "$BETA" "$META" "$OUT"
+
+echo
+echo "finished: $(date)"
+ls -la "$OUT"
