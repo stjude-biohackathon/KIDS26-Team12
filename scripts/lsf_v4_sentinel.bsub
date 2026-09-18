@@ -1,0 +1,194 @@
+#!/bin/bash
+#BSUB -J "kids26_v4[3,10,26,28]"
+#BSUB -q priority
+#BSUB -n 4
+#BSUB -R "span[hosts=1] rusage[mem=60GB]"
+#BSUB -M 240GB
+#BSUB -W 8:00
+#BSUB -o logs/v4_%J_%I.out
+#BSUB -e logs/v4_%J_%I.err
+# =============================================================================
+# KIDS26 Team 12 - V4-lineage-penalized SENTINEL folds, ABSOLUTE-target model.
+# =============================================================================
+#
+# WHAT THIS RUNS
+#   FOUR outer folds only, not all thirty. Each task holds out one cancer type,
+#   fits the ABSOLUTE reference-HRDsum elastic net from R/model.R on the other
+#   29, and scores the held-out type. Tasks are independent.
+#
+# WHAT V4 IS
+#   THE ONE alternative experiment pre-registered in
+#   docs/27_V3_PREREGISTRATION.md section 6, written and committed before any V3
+#   result existed. It replaces the unsupervised 5,000-probe filter with a
+#   SUPERVISED, explicitly de-lineaged one:
+#
+#       score_j = |z_meta_j| * c_j  -  lambda_pen * l_j
+#
+#   z_meta_j  Within each TRAINING tissue t, methylation and HRDsum are
+#             standardised, their Pearson correlation is taken, Fisher-z
+#             transformed, and the per-tissue z's are combined by a fixed-effect
+#             inverse-variance meta-analysis with weights n_t - 3.
+#   c_j       Weighted sign consistency across training tissues, in [0,1]. A
+#             probe that points one way in half the tissues and the other way in
+#             the rest is multiplied down to nothing however large its |z_meta|.
+#   l_j       Lineage discriminability: the between/within variance ratio
+#             1 - SS_within/SS_total, taken from the SAME sums-of-squares
+#             decomposition within_tissue_var() already implements for V3-abs,
+#             then robustly standardised onto the scale of the HRD term.
+#
+#   Everything else is held at run 01: identity target, alpha in {0.1,0.5,1},
+#   data-derived lambda path, inner folds = one per training cancer,
+#   standardize=FALSE, 5,000 features, seed 260910.
+#
+#   Concretely this is
+#       Rscript scripts/loco_one_fold.R ... identity lineage_penalized
+#   which sets fit_en(feature_rank="lineage_penalized").
+#
+# HOW lambda_pen IS CHOSEN - READ THIS BEFORE INTERPRETING ANY RESULT
+#   lambda_pen is a HYPERPARAMETER, tuned INSIDE THE INNER FOLDS over the grid
+#   {0, 0.5, 2} by exactly the macro-averaged inner MAE that already
+#   selects alpha and lambda (R/model.R, fit_en Phase 1). It is NOT fixed by
+#   hand, and it is NOT and can NEVER be chosen by looking at held-out-tissue
+#   performance: the held-out tissue is not present in the matrix fit_en() sees.
+#   The selected value is written to the bundle, to the transform and to the
+#   metrics_<TYPE>.tsv column `lambda_pen`, together with
+#   `lambda_pen_at_boundary` so a grid that was too narrow is visible.
+#
+# WHY THREE GRID POINTS AND NOT FIVE - A MEASURED, PRE-DECLARED TRADE
+#   docs/27 section 6 says only "lambda selected in the inner folds"; it fixes
+#   no grid. The five-point grid {0, 0.25, 0.5, 1, 2} is this repository's
+#   default (R/model.R fit_en, argument lambda_pen_grid). It was cut to THREE
+#   for the sentinel on measured timings, not on any result.
+#
+#   scripts/benchmark_v4_rank.R, job 323239613, on the real 7,707 x 336,480
+#   matrix holding out BRCA (29 training tissues, inner-train n=6,245):
+#       preprocess_base                       51.0 s
+#       lineage_meta_stats FULL SWEEP         29.1 s   <- shared across penalties
+#       preprocess_finalize (per penalty)      0.5 s
+#       apply_preprocess (per penalty)         1.2 s
+#       glmnet, 3 alphas (per penalty)        25.5 s
+#     => SHARED 80.1 s per inner fold, PER PENALTY 27.2 s
+#     => grid of 3: 161.7 s/inner fold =  78.2 min over 29 inner folds
+#        grid of 5: 216.1 s/inner fold = 104.4 min over 29 inner folds
+#
+#   With matrix load (~3 min) and the outer refit, a 3-point grid lands a fold
+#   at ~85 min - inside the ~90 min sentinel box and comparable to a V3 fold -
+#   while a 5-point grid would land at ~115 min. The ranking sweep itself is
+#   NOT the bottleneck (29 s for all 336,480 probes); the per-penalty glmnet
+#   refits are.
+#
+#   {0, 0.5, 2} keeps the informative endpoints: 0 is the unpenalised
+#   meta-association ranking (the anchor - V4 with the lineage term switched
+#   off), 2 is the strongest penalty in the default grid, and 0.5 is interior.
+#   THIS IS STILL GENUINE INNER-FOLD SELECTION over three candidates, not a
+#   hand-picked constant and not a comparison made at a value chosen from
+#   held-out performance. -W is 8:00 regardless, so a slow fold is not at risk
+#   of being killed; the grid size is about the sentinel's clock, not the job's.
+#
+# LEAKAGE - THE SINGLE MOST IMPORTANT PROPERTY OF THIS RUN
+#   V4 is the FIRST ranker in this project that reads y. That makes supervised
+#   selection leakage the failure mode to guard, and it is guarded structurally:
+#   the meta statistic is recomputed from scratch inside EVERY training fold -
+#   the outer refit and each of the 29 inner folds - on that fold's own rows,
+#   own labels and own tissue vector. There is no global precomputation and
+#   nothing is carried across folds. See R/model.R fit_en(): the outer sweep at
+#   the `stats_out <- lineage_meta_stats(...)` call and the inner sweep at
+#   `stats_in <- lineage_meta_stats(...)` inside the fold loop, both fed only
+#   from rows already masked to the training set.
+#
+#   tests/test_v4_lineage_penalized.R check 2 asserts this by replacing the
+#   held-out block's FEATURE ROWS, its HRD LABELS and its TISSUE NAMES with
+#   garbage and requiring the preprocessing constants, selected features,
+#   coefficients, alpha, lambda AND lambda_pen to be identical().
+#
+# WHY ONLY FOUR, AND WHY THESE FOUR
+#   Same sentinel-then-gate protocol, and deliberately the SAME four tissues
+#   docs/27 section 4 pre-registered for V3-abs and docs/26 section 7c
+#   pre-registered before that. They are NOT re-chosen for V4; reusing them
+#   unmodified is what makes the two variants directly comparable and is what
+#   stops the choice being accused of having been tuned. Gates G1-G7 of
+#   docs/27 section 5 apply to this run UNCHANGED.
+#
+#   Indices are POSITIONS IN sort(unique(cancer_type[!cns])), the same ordering
+#   loco_one_fold.R uses:
+#        3 = BRCA   largest tissue, run 01 within-tissue r = 0.632. Gate G2 is a
+#                   single-tissue floor here precisely because a macro average
+#                   can hide one collapse.
+#       10 = KICH   small (n=65) but a strong within-tissue signal in run 01.
+#                   Tests whether a supervised filter survives a small cohort -
+#                   the regime where supervised selection is most fragile.
+#       26 = THCA   NEGATIVE CONTROL. Run 01 r = -0.032: its within-tissue target
+#                   is near-constant, so within-tissue evaluation there is close
+#                   to meaningless. THCA scoring well is NOT evidence of success,
+#                   is excluded from every macro gate statistic, and is read only
+#                   as a harm detector.
+#       28 = UCEC   large, high within-tissue r (0.758) AND the largest positive
+#                   tissue offset (+6.49). Separates ranking from calibration.
+#
+# GBM/LGG
+#   Still a locked partition. loco_one_fold.R drops them from BOTH the train and
+#   the test mask before anything is fitted, so they enter neither the model,
+#   nor the meta-association statistic, nor the lineage term.
+#
+# QUEUE CHOICE - priority, NOT biohackathon
+#   biohackathon has exactly two usable nodes and 80 priority. priority maps to
+#   the rhel8_rome host group: 46 nodes at 1,003 GB and 14 at 1.9 TB. A 240 GB
+#   task places easily there and leaves biohackathon free for teammates.
+#
+#   *** rusage[mem] ON THIS CLUSTER IS PER SLOT, NOT PER JOB. ***
+#   60 GB x 4 slots = 240 GB reserved, matching -M. The measured peak for the
+#   equivalent absolute-model fold was 173 GB (job 323075937). V4's sweep uses
+#   the same blocked O(N * block_size) scheme as the V3 within-tissue sweep
+#   (block_size 20000), adding a bounded few GB of temporaries; the per-penalty
+#   transforms are 5,000-column matrices and are released as the loop advances.
+#   Do not raise -n without lowering rusage[mem] to match.
+#
+#   No %N throttle: all four tasks are meant to run concurrently.
+#
+# SUBMIT
+#   bsub < scripts/lsf_v4_sentinel.bsub
+#
+# MONITOR
+#   bjobs -A
+#   tail -f logs/v4_<JOBID>_3.out
+#
+# AFTER ALL FOUR COMPLETE
+#   Score them against docs/27 section 5 gates G1-G7 using the run 01 baseline
+#   table in docs/27 section 4. Do NOT re-tune against these four tissues: per
+#   docs/27 section 5 "If the sentinel fails", a failure here stops V4 and does
+#   not authorise a further variant.
+# =============================================================================
+
+set -euo pipefail
+
+REPO=/research/groups/shelagrp/home/esavage/KIDS26/KIDS26-Team12
+BETA=data/processed/beta.tsv
+META=data/processed/master_samples.tsv
+OUT=results/v4_sentinel
+
+cd "$REPO"
+mkdir -p logs "$OUT/folds"
+
+echo "=== v4 lineage-penalized sentinel job ${LSB_JOBID} task ${LSB_JOBINDEX} on $(hostname) ==="
+echo "started: $(date)"
+free -g | head -2
+echo
+
+# Pin thread counts to the slots LSF granted, so R's BLAS does not spawn one
+# thread per physical core (up to 128 on some rome nodes) and oversubscribe.
+# This matters more for V4 than for V3: the meta sweep is BLAS-bound, one
+# crossprod() per tissue per column block.
+export OMP_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export OPENBLAS_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export MKL_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+
+# LSB_JOBINDEX is the 1-based fold index into the sorted development types.
+# identity          = no target transform (run 01 behaviour).
+# lineage_penalized = THE ONE CHANGE that defines V4.
+# The final argument is the lambda_pen GRID, not a lambda_pen. fit_en() searches
+# it in the inner folds; nothing here selects a value.
+Rscript scripts/loco_one_fold.R "$BETA" "$META" "$OUT" "${LSB_JOBINDEX}" \
+        identity lineage_penalized 0,0.5,2
+
+echo
+echo "finished: $(date)"

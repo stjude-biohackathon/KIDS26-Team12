@@ -35,9 +35,14 @@
 #   the 5,000-probe unsupervised filter ranks probes by TOTAL variance across
 #   the training fold). Set "within_tissue" for V3-abs, which ranks the same
 #   5,000 probes by POOLED WITHIN-TISSUE variance instead, so probes that only
-#   separate tissues from one another cannot win a slot. Everything else about
-#   the fold - missingness filter, medians, centre/scale, tuning grid, target -
-#   is unchanged. Whichever is used is recorded in metrics_<TYPE>.tsv.
+#   separate tissues from one another cannot win a slot. Set "lineage_penalized"
+#   for V4 (docs/27 section 6): a SUPERVISED within-tissue HRD meta-association
+#   score minus a lineage-discriminability penalty whose weight lambda_pen is
+#   selected inside the inner folds by the same macro-averaged MAE that picks
+#   alpha and lambda. Everything else about the fold - missingness filter,
+#   medians, centre/scale, tuning grid, target - is unchanged. Whichever is used
+#   is recorded in metrics_<TYPE>.tsv, and on the V4 path the selected
+#   lambda_pen is recorded there too.
 #
 # OUTPUT
 #   One .rds bundle and two .tsv files per fold, written into <out_dir>/folds/.
@@ -50,16 +55,31 @@
 # =============================================================================
 
 args <- commandArgs(trailingOnly=TRUE)
-if (length(args) < 4 || length(args) > 6) {
-  stop("Usage: Rscript scripts/loco_one_fold.R <beta.tsv> <master.tsv> <out_dir> <fold_index> [transform] [feature_rank]")
+if (length(args) < 4 || length(args) > 7) {
+  stop("Usage: Rscript scripts/loco_one_fold.R <beta.tsv> <master.tsv> <out_dir> <fold_index> [transform] [feature_rank] [lambda_pen_grid]")
 }
 beta_path <- args[1]; meta_path <- args[2]; out_dir <- args[3]
 fold_index <- as.integer(args[4])
 transform_name <- if (length(args) >= 5) args[5] else "identity"
 feature_rank <- if (length(args) >= 6) args[6] else "pooled"
+# lambda_pen_grid is a comma-separated list of candidate lineage penalties and
+# is meaningful ONLY on the lineage_penalized path. It defaults to the grid
+# named in docs/27 section 6. Whatever is supplied is SEARCHED IN THE INNER
+# FOLDS - passing a grid does not pick a value, it only says which values the
+# inner-fold macro MAE is allowed to choose between.
+lambda_pen_grid <- if (length(args) >= 7) {
+  g <- as.numeric(strsplit(args[7], ",", fixed=TRUE)[[1]])
+  if (!length(g) || any(!is.finite(g))) stop("lambda_pen_grid must be finite comma-separated numbers")
+  g
+} else c(0, 0.25, 0.5, 1, 2)
 if (is.na(fold_index) || fold_index < 1L) stop("fold_index must be a positive integer")
-if (!feature_rank %in% c("pooled", "within_tissue")) {
-  stop("feature_rank must be 'pooled' or 'within_tissue'")
+if (!feature_rank %in% c("pooled", "within_tissue", "lineage_penalized")) {
+  stop("feature_rank must be 'pooled', 'within_tissue' or 'lineage_penalized'")
+}
+# A grid on an unsupervised rank would be silently ignored, which is exactly the
+# kind of quiet no-op that makes a run unauditable. Refuse it.
+if (length(args) >= 7 && feature_rank != "lineage_penalized") {
+  stop("lambda_pen_grid is only meaningful with feature_rank='lineage_penalized'")
 }
 
 fold_dir <- file.path(out_dir, "folds")
@@ -69,6 +89,9 @@ cat("host       :", Sys.info()[["nodename"]], "\n")
 cat("fold index :", fold_index, "\n")
 cat("transform  :", transform_name, "\n")
 cat("feature_rank:", feature_rank, "\n")
+if (feature_rank == "lineage_penalized")
+  cat("lambda_pen grid (searched in the INNER folds):",
+      paste(lambda_pen_grid, collapse=", "), "\n")
 cat("started    :", format(Sys.time()), "\n\n")
 
 source("R/model.R")
@@ -128,11 +151,15 @@ t0 <- Sys.time()
 # own rows. meta$cancer_type[tr] carries the same `tr` mask as the matrix, so the
 # held-out type is absent from the ranking statistic by construction.
 b <- fit_en(x[tr,,drop=FALSE], tf$forward(meta$HRDsum[tr]), meta$patient_id[tr], meta$cancer_type[tr],
-            feature_rank = feature_rank)
+            feature_rank = feature_rank, lambda_pen_grid = lambda_pen_grid)
 b$target_transform <- transform_name
 cat(sprintf("fit_en completed in %.1f min\n", as.numeric(difftime(Sys.time(), t0, units="mins"))))
 cat(sprintf("  selected alpha=%.2g lambda=%.5g  (boundary: %s)\n",
             b$alpha, b$lambda, b$lambda_boundary_side))
+if (!is.null(b$lambda_pen)) {
+  cat(sprintf("  selected lambda_pen=%.4g from grid {%s} (inner-fold macro MAE)\n",
+              b$lambda_pen, paste(b$lambda_pen_grid, collapse=", ")))
+}
 
 p <- predict_en(b, x[te,,drop=FALSE])
 # Back-transform IMMEDIATELY so every downstream metric, null and artefact is on
@@ -153,6 +180,10 @@ mm$target_transform <- transform_name
 # Provenance: every metrics row states which probe-ranking strategy produced it,
 # so a pooled run and a V3-abs run are never confusable after the fact.
 mm$feature_rank <- feature_rank
+# V4 only: the inner-fold-selected lineage penalty, and whether it landed on an
+# endpoint of its grid (which would say the grid was too narrow).
+mm$lambda_pen <- if (is.null(b$lambda_pen)) NA_real_ else b$lambda_pen
+mm$lambda_pen_at_boundary <- if (is.null(b$lambda_pen_at_boundary)) NA else b$lambda_pen_at_boundary
 mm$selected_features <- length(b$preprocess$features)
 mm$alpha <- b$alpha
 mm$lambda <- b$lambda

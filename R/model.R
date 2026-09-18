@@ -134,6 +134,174 @@ matrixStatsOrBase_colAnys <- function(m) {
 }
 
 
+# =============================================================================
+# V4-lineage-penalized: supervised within-tissue HRD meta-association ranking.
+# docs/27_V3_PREREGISTRATION.md section 6, declared before any V3 result existed.
+# =============================================================================
+#
+# WHAT THIS IS
+#   The V3-abs filter is unsupervised: it ranks probes by how much they VARY
+#   inside tissues, never asking whether that variation tracks HRD. V4 replaces
+#   it with a SUPERVISED statistic that is still explicitly de-lineaged:
+#
+#     score_j = |z_meta_j| * c_j  -  lambda_pen * l_j
+#
+#   z_meta_j  fixed-effect meta-analysis, across training tissues, of the
+#             within-tissue Pearson correlation between probe j and HRDsum,
+#             Fisher-z transformed and inverse-variance weighted (w_t = n_t-3).
+#   c_j       weighted sign consistency in [0,1]: 1 when every training tissue
+#             agrees on the direction, 0 when the weight splits evenly.
+#   l_j       lineage discriminability, the ICC-like between/within variance
+#             ratio from the SAME sums-of-squares decomposition used by
+#             within_tissue_var(), robustly rescaled onto the units of the HRD
+#             term so that a lambda_pen grid of order 1 is meaningful.
+#
+# LEAKAGE
+#   Everything here is a function of the rows it is handed. fit_en() hands it
+#   the outer-training block for the refit and each inner fold's own training
+#   rows for tuning; there is no global precomputation and no reuse across
+#   folds. Unlike "pooled" and "within_tissue" this statistic reads y, which is
+#   exactly why the leakage assertion in tests/test_v4_lineage_penalized.R
+#   corrupts the held-out LABELS as well as the held-out feature rows.
+#
+# WHY IT IS ONE PASS
+#   Per column block and per tissue t we accumulate three compiled reductions:
+#     S_t = colSums(x_t), Q_t = colSums(x_t^2), P_t = x_t' y_t^c.
+#   From those alone:
+#     SS_within(j)   = sum_t (Q_t - S_t^2/n_t)          <- the V3 decomposition
+#     SS_total(j)    = sum_t Q_t - (sum_t S_t)^2 / N
+#     r_{t,j}        = P_t / sqrt((Q_t - S_t^2/n_t) * SS(y_t))
+#   so the lineage term costs NOTHING extra beyond the correlation sweep, and
+#   the whole ranking is a single blocked pass over the matrix. Peak memory is
+#   O(N * block_size) exactly as within_tissue_var(), which is why the same
+#   block_size=20000 default is used.
+#
+# Standardising methylation and HRDsum within each tissue before correlating is
+# a no-op for Pearson's r (it is location/scale invariant), so the correlation
+# below IS the within-tissue standardised association docs/27 section 6 asks for.
+lineage_meta_stats <- function(x, y, cancer, med = NULL, block_size = 20000L,
+                               min_n = 4L, r_clamp = 1 - 1e-6) {
+  stopifnot(is.matrix(x), !is.null(colnames(x)), nrow(x) == length(cancer),
+            length(y) == nrow(x))
+  if (!all(is.finite(y))) stop("lineage_meta_stats(): y must be finite")
+  cancer <- as.character(cancer)
+  groups <- sort(unique(cancer))
+  idx <- lapply(groups, function(g) which(cancer == g))
+  nt  <- vapply(idx, length, integer(1))
+  N <- nrow(x); Tn <- length(groups)
+  if (N - Tn < 1L) stop("Need more training rows than tissues for the meta statistic")
+
+  # A Fisher-z has sampling variance 1/(n_t-3), so a tissue with n_t <= 3 has no
+  # usable weight at all. Such tissues still contribute to the variance
+  # decomposition (they are real rows) but carry zero weight in the meta term.
+  w <- as.numeric(pmax(nt - 3L, 0L)); w[nt < min_n] <- 0
+  sw <- sum(w)
+  if (sw <= 0) stop("lineage_meta_stats(): no training tissue has enough samples for a weight")
+
+  # Centre y WITHIN each tissue. This is the "standardise HRDsum within tissue"
+  # step; the scale half cancels in the correlation.
+  yc  <- lapply(idx, function(i) y[i] - mean(y[i]))
+  ssy <- vapply(yc, function(v) sum(v * v), numeric(1))
+
+  p <- ncol(x)
+  z_meta <- numeric(p); cons <- numeric(p); i2 <- numeric(p)
+  lin <- numeric(p); nonconst <- logical(p)
+  starts <- seq.int(1L, p, by = block_size)
+  dfQ <- max(sum(w > 0) - 1L, 0L)
+
+  for (st in starts) {
+    cols <- st:min(st + block_size - 1L, p)
+    m <- length(cols)
+    xb <- x[, cols, drop = FALSE]
+    storage.mode(xb) <- "double"
+    nf <- !is.finite(xb)
+    if (any(nf)) {
+      if (is.null(med)) stop("lineage_meta_stats(): non-finite values need `med`")
+      mb <- med[colnames(xb)]
+      if (any(!is.finite(mb))) stop("lineage_meta_stats(): non-finite median supplied")
+      for (j in which(matrixStatsOrBase_colAnys(nf))) xb[nf[, j], j] <- mb[j]
+    }
+
+    zt   <- matrix(0, Tn, m)     # Fisher-z per tissue x probe for this block
+    Stot <- numeric(m); Qtot <- numeric(m); wSS <- numeric(m)
+    for (k in seq_along(idx)) {
+      i <- idx[[k]]
+      if (!length(i)) next
+      xt <- xb[i, , drop = FALSE]
+      S <- colSums(xt); Q <- colSums(xt * xt)
+      Stot <- Stot + S; Qtot <- Qtot + Q
+      ssx <- Q - (S * S) / nt[k]
+      ssx[ssx < 0 & ssx > -1e-8] <- 0
+      wSS <- wSS + ssx
+      if (w[k] > 0 && ssy[k] > 0) {
+        # crossprod is a single BLAS call: the cross-product of every probe in
+        # the block with this tissue's centred y.
+        P <- as.numeric(crossprod(xt, yc[[k]]))
+        den <- sqrt(ssx * ssy[k])
+        r <- ifelse(den > 0, P / den, 0)
+        # Clamp before atanh so a probe that is a perfect linear function of y
+        # inside one tissue yields a large-but-finite z instead of Inf.
+        r <- pmin(pmax(r, -r_clamp), r_clamp)
+        zt[k, ] <- atanh(r)
+      }
+      rm(xt, S, Q, ssx)
+    }
+
+    totSS <- Qtot - (Stot * Stot) / N
+    totSS[totSS < 0 & totSS > -1e-8] <- 0
+    nonconst[cols] <- totSS > 0
+
+    wz   <- colSums(w * zt)                    # w recycles down each column
+    z_meta[cols] <- wz / sqrt(sw)              # fixed-effect combined z
+    cons[cols]   <- abs(colSums(w * sign(zt))) / sw
+    zbar <- wz / sw
+    Qc   <- colSums(w * (zt - rep(zbar, each = Tn))^2)   # Cochran's Q
+    i2[cols] <- if (dfQ > 0) pmax(0, (Qc - dfQ) / pmax(Qc, .Machine$double.eps)) else 0
+    lin[cols] <- ifelse(totSS > 0, pmin(1, pmax(0, 1 - wSS / totSS)), 0)
+    rm(xb, nf, zt, Stot, Qtot, wSS, totSS, wz, zbar, Qc)
+  }
+
+  nm <- colnames(x)
+  names(z_meta) <- nm; names(cons) <- nm; names(i2) <- nm
+  names(lin) <- nm; names(nonconst) <- nm
+  list(z_meta = z_meta, consistency = cons, heterogeneity_i2 = i2,
+       lineage = lin, nonconstant = nonconst,
+       tissues = groups, n_per_tissue = nt, weights = w)
+}
+
+
+# -----------------------------------------------------------------------------
+# lineage_score(): turn the meta statistics into the ranking score.
+# -----------------------------------------------------------------------------
+# score_j = |z_meta_j| * c_j - lambda_pen * l_j_standardised
+#
+# The two terms live on different scales: |z_meta| * c is a weighted z, l is a
+# variance ratio bounded in [0,1]. docs/27 section 6 requires l to be put on a
+# comparable scale; we do that ROBUSTLY (median / MAD) so a handful of extreme
+# probes cannot set the exchange rate, and then multiply by the MAD of the HRD
+# term so that lambda_pen = 1 means "one robust SD of lineage costs one robust
+# SD of HRD evidence". Subtracting the median of l shifts every score by the
+# same constant and therefore cannot change the ranking; only the scale matters.
+#
+# lambda_pen = 0 reduces exactly to the unpenalised meta-association ranking,
+# which is the anchor point of the grid.
+lineage_score <- function(st, lambda_pen) {
+  stopifnot(is.numeric(lambda_pen), length(lambda_pen) == 1L, is.finite(lambda_pen))
+  h <- abs(st$z_meta) * st$consistency
+  l <- st$lineage
+  rscale <- function(v) {
+    s <- stats::mad(v)
+    if (!is.finite(s) || s <= 0) s <- stats::sd(v)
+    if (!is.finite(s) || s <= 0) s <- 1
+    s
+  }
+  l_std <- ((l - stats::median(l)) / rscale(l)) * rscale(h)
+  v <- h - lambda_pen * l_std
+  names(v) <- names(st$z_meta)
+  v
+}
+
+
 # -----------------------------------------------------------------------------
 # fit_preprocess(): LEARN the preprocessing transform from training rows only.
 # -----------------------------------------------------------------------------
@@ -149,8 +317,17 @@ matrixStatsOrBase_colAnys <- function(m) {
 #                        "within_tissue" - pooled within-tissue variance, i.e.
 #                                          variance after removing each tissue's
 #                                          own mean. Requires `cancer`.
-#         cancer       tissue label per ROW of x. Required only when
-#                      feature_rank="within_tissue"; ignored otherwise.
+#                        "lineage_penalized" - V4. SUPERVISED: within-tissue
+#                                          HRD meta-association minus a lineage
+#                                          penalty. Requires `cancer` AND `y`.
+#         cancer       tissue label per ROW of x. Required for "within_tissue"
+#                      and "lineage_penalized"; ignored otherwise.
+#         y            target per ROW of x. Required ONLY for
+#                      "lineage_penalized"; ignored (and must be ignored)
+#                      otherwise, so the two unsupervised paths stay
+#                      bit-identical whether or not a caller passes it.
+#         lambda_pen   lineage penalty weight for "lineage_penalized". Chosen in
+#                      the inner folds by fit_en(), never by hand here.
 #         block_size   column block width for the within-tissue sweep.
 #
 # Output: a list describing the transform. It contains NO sample data - only
@@ -158,17 +335,20 @@ matrixStatsOrBase_colAnys <- function(m) {
 #
 # This function must only ever be handed TRAINING rows. Every caller below
 # subsets x before calling it.
-fit_preprocess <- function(x, max_features=5000L, max_missing=0.05,
-                           feature_rank=c("pooled","within_tissue"),
-                           cancer=NULL, block_size=20000L) {
-  feature_rank <- match.arg(feature_rank)
-  if (feature_rank == "within_tissue") {
-    if (is.null(cancer)) stop("feature_rank='within_tissue' requires `cancer`")
-    stopifnot(length(cancer) == nrow(x))
-  }
-  # Guard the shape contract up front. Duplicate probe names would make the
-  # name-based column reconstruction in apply_preprocess() ambiguous, so reject
-  # them here rather than producing a silently mis-aligned matrix later.
+#
+# STRUCTURE (introduced for V4, behaviour-preserving)
+#   The body is split into two helpers:
+#     preprocess_base()     missingness filter + training medians + imputation.
+#                           This is the EXPENSIVE part (~73 s at full width) and
+#                           it does not depend on the ranking statistic at all.
+#     preprocess_finalize() ranking + top-max_features + centre/scale.
+#   fit_preprocess() is exactly base-then-finalize, so every existing call is
+#   bit-identical to before the split. fit_en()'s V4 path calls the two halves
+#   separately so that a grid of lambda_pen values can share ONE base pass and
+#   ONE meta-statistic pass over the fold's rows. That is a within-fold cache of
+#   a quantity computed from that fold's own rows - it is NOT global
+#   precomputation and nothing is ever reused across folds.
+preprocess_base <- function(x, max_missing=0.05) {
   stopifnot(is.matrix(x), !is.null(colnames(x)), !anyDuplicated(colnames(x)))
 
   # ---------------------------------------------------------------------------
@@ -246,6 +426,22 @@ fit_preprocess <- function(x, max_features=5000L, max_missing=0.05,
     cols <- which(if (has_ms) matrixStats::colAnys(nonfinite) else apply(nonfinite,2,any))
     for (j in cols) z[nonfinite[,j],j] <- med[j]
   }
+  list(z=z, med=med, max_missing=max_missing, has_ms=has_ms)
+}
+
+
+# -----------------------------------------------------------------------------
+# preprocess_finalize(): rank, select the top max_features, centre and scale.
+# -----------------------------------------------------------------------------
+# `base` is the output of preprocess_base() for THIS fold's training rows.
+# `stats` is an optional pre-computed lineage_meta_stats() object for the SAME
+# rows, supplied only so a lambda_pen grid does not repay for the sweep.
+preprocess_finalize <- function(base, max_features=5000L,
+                                feature_rank=c("pooled","within_tissue","lineage_penalized"),
+                                cancer=NULL, y=NULL, lambda_pen=0,
+                                block_size=20000L, stats=NULL) {
+  feature_rank <- match.arg(feature_rank)
+  z <- base$z; med <- base$med; has_ms <- base$has_ms
 
   # ---------------------------------------------------------------------------
   # LEARNED QUANTITY 3 of 6: unsupervised feature selection by variance.
@@ -271,12 +467,30 @@ fit_preprocess <- function(x, max_features=5000L, max_missing=0.05,
   # within-tissue variance too, so the `v > 0` filter still removes it; a probe
   # that varies only BETWEEN tissues also falls out here, which is the whole
   # point of the V3-abs change.
-  if (feature_rank == "within_tissue") {
-    v <- within_tissue_var(z, cancer, med=med, block_size=block_size)
+  #
+  # V4-lineage-penalized: the ranking becomes SUPERVISED. See the long note on
+  # lineage_meta_stats() above. z is still the TRAINING block only and y is
+  # still the TRAINING target only (the caller subsets both with the same mask),
+  # so the statistic is training-fold-only by construction exactly as V3's is -
+  # but because it reads y, the leakage test must corrupt held-out LABELS too.
+  if (feature_rank == "lineage_penalized") {
+    # V4. The score is NOT a variance, so `v > 0` is the wrong eligibility test
+    # here: a perfectly good probe can score zero or negative once the lineage
+    # penalty is applied. Eligibility is instead "has non-zero total variance in
+    # the training block", which is the same set the pooled path would admit,
+    # and the ORDERING is by score. The tie-break on probe name is identical.
+    st <- if (is.null(stats)) lineage_meta_stats(z, y, cancer, med=med, block_size=block_size)
+          else stats
+    v <- lineage_score(st, lambda_pen)
+    names(v) <- colnames(z); ii <- which(is.finite(v) & st$nonconstant)
   } else {
-    v <- if (has_ms) matrixStats::colVars(z) else apply(z,2,var)
+    if (feature_rank == "within_tissue") {
+      v <- within_tissue_var(z, cancer, med=med, block_size=block_size)
+    } else {
+      v <- if (has_ms) matrixStats::colVars(z) else apply(z,2,var)
+    }
+    names(v) <- colnames(z); ii <- which(is.finite(v) & v>0)
   }
-  names(v) <- colnames(z); ii <- which(is.finite(v) & v>0)
 
   # Sort by decreasing variance, breaking ties on probe NAME. The tie-break
   # makes selection fully deterministic: two probes with identical variance
@@ -308,8 +522,41 @@ fit_preprocess <- function(x, max_features=5000L, max_missing=0.05,
   #
   # This object contains ONLY per-probe summary statistics - no sample-level
   # data - which is what makes it safe to save, share and ship inside a model.
-  list(features=colnames(z), median=med[colnames(z)],center=mu,scale=s,
-       max_missing=max_missing, feature_rank=feature_rank)
+  out <- list(features=colnames(z), median=med[colnames(z)],center=mu,scale=s,
+              max_missing=base$max_missing, feature_rank=feature_rank)
+  # lambda_pen is recorded ONLY on the V4 path. Appending it unconditionally
+  # would change the shape of every "pooled" transform ever produced and break
+  # the bit-identity guarantee the V3 tests assert.
+  if (feature_rank == "lineage_penalized") out$lambda_pen <- lambda_pen
+  out
+}
+
+
+# -----------------------------------------------------------------------------
+# fit_preprocess(): the public entry point. base + finalize, unchanged contract.
+# -----------------------------------------------------------------------------
+fit_preprocess <- function(x, max_features=5000L, max_missing=0.05,
+                           feature_rank=c("pooled","within_tissue","lineage_penalized"),
+                           cancer=NULL, y=NULL, lambda_pen=0, block_size=20000L) {
+  feature_rank <- match.arg(feature_rank)
+  if (feature_rank %in% c("within_tissue","lineage_penalized")) {
+    if (is.null(cancer)) stop(sprintf("feature_rank='%s' requires `cancer`", feature_rank))
+    stopifnot(length(cancer) == nrow(x))
+  }
+  # V4 is the first SUPERVISED ranker in this file, so it is the first that can
+  # be silently wrong by falling back to an unsupervised statistic. Refuse
+  # loudly instead. A missing y here would make an entire sentinel meaningless
+  # while looking perfectly healthy in the logs.
+  if (feature_rank == "lineage_penalized") {
+    if (is.null(y)) stop("feature_rank='lineage_penalized' requires `y`")
+    stopifnot(length(y) == nrow(x))
+    if (!all(is.finite(y))) stop("feature_rank='lineage_penalized' requires finite `y`")
+    stopifnot(is.numeric(lambda_pen), length(lambda_pen) == 1L, is.finite(lambda_pen))
+  }
+  base <- preprocess_base(x, max_missing)
+  preprocess_finalize(base, max_features=max_features, feature_rank=feature_rank,
+                      cancer=cancer, y=y, lambda_pen=lambda_pen,
+                      block_size=block_size)
 }
 
 
@@ -472,12 +719,23 @@ check_lambda_boundary <- function(selected_lambda,path,alpha,label="") {
 # Everything passed in here is training data for the current outer fold. The
 # outer held-out cancer is never visible to this function.
 fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L,
-                   feature_rank=c("pooled","within_tissue"),block_size=20000L) {
+                   feature_rank=c("pooled","within_tissue","lineage_penalized"),
+                   block_size=20000L,lambda_pen_grid=c(0,0.25,0.5,1,2)) {
   feature_rank <- match.arg(feature_rank)
   if (!requireNamespace("glmnet",quietly=TRUE)) stop("Install glmnet via scripts/setup.R")
   stopifnot(length(y)==nrow(x),all(is.finite(y)),length(patient)==length(y))
   # A constant target makes R2 undefined and the fit meaningless.
   if (sd(y)==0) stop("Constant training target")
+  is_v4 <- feature_rank == "lineage_penalized"
+  if (is_v4) {
+    stopifnot(is.numeric(lambda_pen_grid), length(lambda_pen_grid) >= 1L,
+              all(is.finite(lambda_pen_grid)), !anyDuplicated(lambda_pen_grid))
+    lambda_pen_grid <- sort(lambda_pen_grid)
+  }
+  # On the two unsupervised paths lambda_pen is not a hyperparameter at all, so
+  # the grid collapses to a single inert value and the tuning table keeps its
+  # pre-V4 shape exactly.
+  pens <- if (is_v4) lambda_pen_grid else NA_real_
 
   folds <- inner_folds(patient,cancer,seed)
 
@@ -513,14 +771,45 @@ fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L,
   # V3-abs: `cancer` here is the OUTER-TRAINING tissue vector. The held-out
   # cancer is absent from x and from cancer by construction (the caller subsets
   # both with the same mask), so the within-tissue ranking cannot see it.
-  pp <- fit_preprocess(x,max_features,feature_rank=feature_rank,cancer=cancer,
-                       block_size=block_size)
-  z  <- apply_preprocess(x,pp,FALSE)
-  lam_by_alpha <- lapply(alphas, function(a) lambda_path(z,y,a))
-  names(lam_by_alpha) <- as.character(alphas)
+  #
+  # V4: lambda_pen is a HYPERPARAMETER, so the outer-training block yields one
+  # transform PER candidate lambda_pen. They all share a single preprocess_base()
+  # and a single lineage_meta_stats() sweep over these same outer-training rows,
+  # because neither depends on lambda_pen - only the final ranking does. That is
+  # the whole reason a 5-point penalty grid costs barely more than one point.
+  # `y` here is the OUTER-TRAINING target, subset with the same mask as x.
+  base_out <- preprocess_base(x)
+  stats_out <- if (is_v4) lineage_meta_stats(base_out$z,y,cancer,med=base_out$med,
+                                             block_size=block_size) else NULL
+  pen_key <- function(p) sprintf("%.10g",p)
+  pp_by_pen <- lapply(pens, function(p)
+    preprocess_finalize(base_out,max_features,feature_rank=feature_rank,
+                        cancer=cancer,y=y,
+                        lambda_pen=if (is_v4) p else 0,
+                        block_size=block_size,stats=stats_out))
+  names(pp_by_pen) <- pen_key(pens)
+  rm(base_out); invisible(gc(verbose=FALSE))
+  z_by_pen <- lapply(pp_by_pen, function(q) apply_preprocess(x,q,FALSE))
 
-  grid <- do.call(rbind,lapply(alphas,function(a)
-    data.frame(alpha=a,lambda=lam_by_alpha[[as.character(a)]])))
+  # One lambda path per (lambda_pen, alpha). The path is derived from the
+  # standardised training matrix, which differs between penalties because the
+  # selected probes differ, so a single shared path would be mis-scaled for all
+  # but one penalty.
+  lam_by_pen <- lapply(pen_key(pens), function(pk) {
+    l <- lapply(alphas, function(a) lambda_path(z_by_pen[[pk]],y,a))
+    names(l) <- as.character(alphas); l
+  })
+  names(lam_by_pen) <- pen_key(pens)
+  # Back-compatible name for the single-penalty (pooled / within_tissue) paths.
+  lam_by_alpha <- lam_by_pen[[pen_key(pens[1])]]
+
+  grid <- do.call(rbind,lapply(pens,function(p) do.call(rbind,lapply(alphas,function(a) {
+    d <- data.frame(alpha=a,lambda=lam_by_pen[[pen_key(p)]][[as.character(a)]])
+    # The lambda_pen column exists only on the V4 path, so the tuning table of a
+    # pooled or within_tissue fit keeps exactly its pre-V4 shape.
+    if (is_v4) d$lambda_pen <- p
+    d
+  }))))
   losses <- matrix(NA_real_,nrow(grid),length(unique(folds)))
 
   # ---- Phase 1: inner cross-validation -------------------------------------
@@ -538,48 +827,69 @@ fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L,
     # V3-abs: the ranking statistic is recomputed here too, from x[tr,] and
     # cancer[tr] only. There is no hoisted or global ranking - each inner fold
     # ranks on its own rows, exactly as it re-learns medians and centre/scale.
-    pp_in <- fit_preprocess(x[tr,,drop=FALSE],max_features,
-                            feature_rank=feature_rank,cancer=cancer[tr],
-                            block_size=block_size)
-    ztr <- apply_preprocess(x[tr,,drop=FALSE],pp_in,FALSE)
-    zva <- apply_preprocess(x[va,,drop=FALSE],pp_in,FALSE)
+    # V4: the meta-association sweep is likewise recomputed HERE, from x[tr,],
+    # y[tr] and cancer[tr] only. stats_in is local to this inner fold and is
+    # never reused by another fold; it is shared only across the lambda_pen grid
+    # WITHIN this fold, which is legitimate because every penalty is ranking the
+    # same inner-training rows.
+    base_in <- preprocess_base(x[tr,,drop=FALSE])
+    stats_in <- if (is_v4) lineage_meta_stats(base_in$z,y[tr],cancer[tr],
+                                              med=base_in$med,block_size=block_size) else NULL
 
-    for (a in alphas) {
-      # Each alpha gets ITS OWN lambda path, sorted decreasing because that is
-      # glmnet's expected convention and lets it use warm starts along the path.
-      # Fitting the whole path in one call is far cheaper than one call per
-      # lambda.
-      # standardize=FALSE: see the header note. ztr is already standardised
-      # using training-only statistics and glmnet must not redo it.
-      lam_a <- sort(lam_by_alpha[[as.character(a)]],decreasing=TRUE)
-      mod <- glmnet::glmnet(ztr,y[tr],alpha=a,lambda=lam_a,standardize=FALSE)
-      ids <- which(grid$alpha==a)
-      for (g in ids) {
-        # s= selects one lambda from the fitted path.
-        pred <- as.numeric(predict(mod,zva,s=grid$lambda[g]))
-        # Equal weight to each inner-validation cancer, independent of size.
-        # NOTE: on the primary path each inner fold IS a single cancer, so this
-        # tapply collapses to a plain mean within the fold; the macro-averaging
-        # actually comes from rowMeans(losses) below. The tapply only does real
-        # work on the patient-fold fallback path.
-        losses[g,match(f,sort(unique(folds)))] <- mean(tapply(abs(pred-y[va]),cancer[va],mean))
+    for (p in pens) {
+      pk <- pen_key(p)
+      pp_in <- preprocess_finalize(base_in,max_features,feature_rank=feature_rank,
+                                   cancer=cancer[tr],y=y[tr],
+                                   lambda_pen=if (is_v4) p else 0,
+                                   block_size=block_size,stats=stats_in)
+      ztr <- apply_preprocess(x[tr,,drop=FALSE],pp_in,FALSE)
+      zva <- apply_preprocess(x[va,,drop=FALSE],pp_in,FALSE)
+
+      for (a in alphas) {
+        # Each alpha gets ITS OWN lambda path, sorted decreasing because that is
+        # glmnet's expected convention and lets it use warm starts along the path.
+        # Fitting the whole path in one call is far cheaper than one call per
+        # lambda.
+        # standardize=FALSE: see the header note. ztr is already standardised
+        # using training-only statistics and glmnet must not redo it.
+        lam_a <- sort(lam_by_pen[[pk]][[as.character(a)]],decreasing=TRUE)
+        mod <- glmnet::glmnet(ztr,y[tr],alpha=a,lambda=lam_a,standardize=FALSE)
+        ids <- if (is_v4) which(grid$alpha==a & grid$lambda_pen==p) else which(grid$alpha==a)
+        for (g in ids) {
+          # s= selects one lambda from the fitted path.
+          pred <- as.numeric(predict(mod,zva,s=grid$lambda[g]))
+          # Equal weight to each inner-validation cancer, independent of size.
+          # NOTE: on the primary path each inner fold IS a single cancer, so this
+          # tapply collapses to a plain mean within the fold; the macro-averaging
+          # actually comes from rowMeans(losses) below. The tapply only does real
+          # work on the patient-fold fallback path.
+          losses[g,match(f,sort(unique(folds)))] <- mean(tapply(abs(pred-y[va]),cancer[va],mean))
+        }
       }
+      rm(ztr,zva,pp_in)
     }
+    rm(base_in,stats_in); invisible(gc(verbose=FALSE))
   }
 
   # Average each grid point's loss across inner folds and take the winner.
   # Because each fold is a cancer, this is a macro average over tissues: a
   # hyperparameter setting that is excellent on BRCA and terrible everywhere
   # else will lose to one that is uniformly decent.
+  #
+  # V4: lambda_pen is selected HERE, by exactly this macro-averaged inner loss,
+  # jointly with alpha and lambda. It is never chosen by hand and never chosen
+  # by looking at the held-out tissue - the held-out tissue is not in x at all.
   grid$inner_macro_mae <- rowMeans(losses)
   best <- which.min(grid$inner_macro_mae)
   best_alpha <- grid$alpha[best]; best_lambda <- grid$lambda[best]
+  best_pen <- if (is_v4) grid$lambda_pen[best] else NA_real_
+  best_pk <- pen_key(if (is_v4) best_pen else pens[1])
 
   # Was the winner at an endpoint of its own path? If so the tuner hit a wall we
   # imposed rather than finding an interior optimum. Warn, and record the fact in
   # the bundle so it survives into the audit trail rather than living only in a
   # console log that may be lost.
-  best_path <- lam_by_alpha[[as.character(best_alpha)]]
+  best_path <- lam_by_pen[[best_pk]][[as.character(best_alpha)]]
   boundary <- check_lambda_boundary(best_lambda,best_path,best_alpha,
                                     label=sprintf("fit_en (n=%d)",length(y)))
 
@@ -588,6 +898,10 @@ fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L,
   # all of which are training rows for this outer fold. The held-out cancer is
   # still excluded, so reusing them here is correct AND saves one full
   # fit_preprocess call (the single most expensive operation in the file).
+  # V4: we pick the transform belonging to the winning lambda_pen. It too was
+  # fitted on these same outer-training rows.
+  pp <- pp_by_pen[[best_pk]]; z <- z_by_pen[[best_pk]]
+  rm(z_by_pen); invisible(gc(verbose=FALSE))
   mod <- glmnet::glmnet(z,y,alpha=best_alpha,
                         lambda=sort(best_path,decreasing=TRUE),standardize=FALSE)
 
@@ -603,7 +917,7 @@ fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L,
   # auditable after the fact), the fold assignments, the OOD cutoff, the seed,
   # the training mean that serves as the null comparator downstream, and the
   # lambda paths plus boundary status so the tuning can be reviewed later.
-  list(preprocess=pp,model=mod,alpha=best_alpha,lambda=best_lambda,
+  out <- list(preprocess=pp,model=mod,alpha=best_alpha,lambda=best_lambda,
        tuning=grid,inner_folds=data.frame(patient_id=patient,cancer_type=cancer,fold=folds),
        lambda_paths=lam_by_alpha,
        lambda_at_boundary=if(is.null(boundary)) NA else (boundary$at_top||boundary$at_bottom),
@@ -611,6 +925,15 @@ fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L,
                             else if(boundary$at_top) "top" else if(boundary$at_bottom) "bottom" else "interior",
        ood_cut=ood_cut,seed=seed,training_n=length(y),training_mean=mean(y),
        feature_rank=feature_rank,target="reference_HRDsum")
+  # Again, V4-only fields. Adding them unconditionally would change the shape of
+  # every bundle this project has ever produced.
+  if (is_v4) {
+    out$lambda_pen <- best_pen
+    out$lambda_pen_grid <- lambda_pen_grid
+    out$lambda_pen_paths <- lam_by_pen
+    out$lambda_pen_at_boundary <- best_pen %in% range(lambda_pen_grid)
+  }
+  out
 }
 
 

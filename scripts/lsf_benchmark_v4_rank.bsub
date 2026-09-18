@@ -1,0 +1,19 @@
+#!/bin/bash
+#BSUB -J kids26_v4bench
+#BSUB -q priority
+#BSUB -n 4
+#BSUB -R "span[hosts=1] rusage[mem=60GB]"
+#BSUB -M 240GB
+#BSUB -W 2:00
+#BSUB -o logs/v4bench_%J.out
+#BSUB -e logs/v4bench_%J.err
+# Timing harness for the V4 ranking pass. No model is fitted, nothing is
+# claimed; this only measures whether a 5-point lambda_pen grid is affordable
+# inside a sentinel fold. See scripts/benchmark_v4_rank.R.
+set -euo pipefail
+cd /research/groups/shelagrp/home/esavage/KIDS26/KIDS26-Team12
+mkdir -p logs results/benchmark
+export OMP_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export OPENBLAS_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export MKL_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+Rscript scripts/benchmark_v4_rank.R data/processed/beta.tsv data/processed/master_samples.tsv results/benchmark
