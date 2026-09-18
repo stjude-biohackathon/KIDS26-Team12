@@ -1,0 +1,115 @@
+#!/bin/bash
+#BSUB -J kids26_cns_eval
+#BSUB -q priority
+#BSUB -n 4
+#BSUB -R "span[hosts=1] rusage[mem=60GB]"
+#BSUB -M 240GB
+#BSUB -W 4:00
+#BSUB -o logs/cns_eval_%J.out
+#BSUB -e logs/cns_eval_%J.err
+# =============================================================================
+# KIDS26 Team 12 - THE ONE-SHOT LOCKED CNS EVALUATION.
+# =============================================================================
+#
+# THIS JOB OPENS THE LOCK. IT IS INTENDED TO RUN EXACTLY ONCE, EVER.
+#
+# Every scoring run appends a row to results/LOCKED_EVALUATION_LEDGER.tsv
+# recording timestamp, git commit, artifact sha256, matrix sha256, output
+# sha256 and sample counts. A second row in that file is not a crime, but it is
+# a permanent, visible record that the cohort was looked at twice, and it
+# devalues every number produced after the first look. Check the ledger does
+# not exist before submitting.
+#
+# AUTHORISATION
+#   docs/29_PRE_UNLOCK_RECORD.md, committed at 1c868c0 while the ledger did not
+#   exist. It designates:
+#     PRIMARY     Candidate B, V3-abs      sha256 df9f7e82...  feature_rank=within_tissue
+#     SENSITIVITY Candidate A, run 01      sha256 0e975cd6...  feature_rank=pooled
+#   The designation was made by the project lead BEFORE any label was read,
+#   following the S1-S7 rule frozen at 28bb913 and scored at 5ee4bac (7 of 7).
+#
+#   docs/28 section 5 permits scoring BOTH candidates in one session, but only
+#   because the choice between them was made on source data and written down
+#   first. Clause 3 of that section is binding: BOTH results are reported,
+#   whatever they show. Reporting only the flattering one is the specific abuse
+#   the clause exists to prevent.
+#
+# WHY ONE JOB SCORES BOTH
+#   data/processed/beta.tsv is a single 28 GB matrix holding all 7,707 samples;
+#   there is no separate CNS file. The dominant cost is reading and transposing
+#   it (~30-50 min), not the two predict() calls, which are seconds. Scoring
+#   both candidates in one job costs one matrix load instead of two and keeps
+#   both predictions provably derived from the same bytes - the sidecar sha256
+#   is recorded in both ledger rows.
+#
+# WHAT IT DOES NOT DO
+#   No refitting. No recalibration. No preprocessing change. No CpG change. No
+#   alpha/lambda change. No post-hoc clipping change. predict_frozen.R applies
+#   the bundle's own recorded target_transform ("clip") and nothing else.
+#
+# RESOURCES
+#   *** rusage[mem] IS PER SLOT ON THIS CLUSTER. *** 60 GB x 4 = 240 GB, matching
+#   -M. Inference is lighter than a fit (no glmnet CV, no inner folds) but the
+#   matrix load and transpose dominate and that is what 173 GB was measured
+#   against. -W 4:00 is ample; expect 40-70 min total.
+#
+# SUBMIT
+#   bsub < scripts/lsf_cns_eval.bsub
+# =============================================================================
+
+set -euo pipefail
+
+REPO=/research/groups/shelagrp/home/esavage/KIDS26/KIDS26-Team12
+BETA=data/processed/beta.tsv
+META=data/processed/master_samples.tsv
+OUT=results/cns_eval_2026-09-18
+
+PRIMARY=results/frozen_v3_2026-09-18/frozen_nonCNS.rds
+SENSITIVITY=results/frozen_2026-09-18/frozen_nonCNS.rds
+
+cd "$REPO"
+mkdir -p logs "$OUT"
+
+echo "=== CNS one-shot evaluation, job ${LSB_JOBID:-local} on $(hostname) ==="
+echo "started: $(date)"
+echo "git commit: $(git rev-parse HEAD)"
+free -g | head -2
+echo
+
+# Refuse to proceed if the artifacts are not the ones docs/29 authorised. A
+# silent artifact swap is the one failure mode the whole freeze discipline
+# exists to prevent, so it is checked here rather than trusted.
+echo "--- verifying frozen artifact checksums against docs/29 ---"
+echo "df9f7e82b0b371b81ecca6a1d99a1a50128a95e78daa63307d5f3b0633a4aa72  $PRIMARY" | sha256sum -c -
+echo "0e975cd6bc7caededffecf34332a3afd250e01bfea54fccab82266021f325763  $SENSITIVITY" | sha256sum -c -
+echo
+
+export OMP_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export OPENBLAS_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export MKL_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+
+# --locked-evaluation is the explicit opt-in. --metadata enables the partition
+# guard AND is what makes the opt-in meaningful: without metadata the script
+# cannot tell a locked sample from a development one.
+echo "=== PRIMARY: Candidate B (V3-abs) ==="
+Rscript scripts/predict_frozen.R "$PRIMARY" "$BETA" "$OUT/cns_predictions_v3.tsv" \
+  --metadata="$META" --locked-evaluation
+
+echo
+echo "=== SENSITIVITY: Candidate A (run 01, pooled) ==="
+Rscript scripts/predict_frozen.R "$SENSITIVITY" "$BETA" "$OUT/cns_predictions_A.tsv" \
+  --metadata="$META" --locked-evaluation
+
+echo
+echo "=== ANALYSIS ==="
+Rscript scripts/analyze_cns.R "$OUT/cns_predictions_v3.tsv" "$META" \
+  results/loco_run01/loco_predictions.tsv "$OUT/analysis_v3" "V3-abs (PRIMARY)"
+
+Rscript scripts/analyze_cns.R "$OUT/cns_predictions_A.tsv" "$META" \
+  results/loco_run01/loco_predictions.tsv "$OUT/analysis_A" "Run01 pooled (SENSITIVITY)"
+
+echo
+echo "finished: $(date)"
+echo "--- ledger ---"
+cat results/LOCKED_EVALUATION_LEDGER.tsv
+ls -la "$OUT"
