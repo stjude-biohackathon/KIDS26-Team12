@@ -8,7 +8,7 @@
 #
 # Data: expects merged_expHRD_master.tsv produced by merge_and_plot_expHRD.R, with
 # columns: patient_id, sample_id, cancer_type, positive_ssGSEA, negative_ssGSEA,
-#          expHRD_exploratory, HRDsum, HRD_LOHLST, TAI, interpretation
+#          expHRD_exploratory, HRDsum, HRD_LOH, LST, TAI, interpretation
 #
 # Run:
 #   Rscript -e 'shiny::runApp("app_expHRD_explorer.R", host="0.0.0.0", port=8787)'
@@ -51,7 +51,7 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       width = 3,
-      selectInput("cancer_filter", "Filter by cancer type",
+      selectInput("cancer_filter", "Cancer type (patient choices & highlight)",
                   choices = c("All", cancer_types), selected = "All"),
       selectizeInput("patient_select", "Select patient(s)",
                      choices = NULL, multiple = TRUE,
@@ -102,7 +102,7 @@ server <- function(input, output, session) {
     d <- selected_data()
     cols <- intersect(c("patient_id", "sample_id", "cancer_type", "positive_ssGSEA",
                          "negative_ssGSEA", "expHRD_exploratory", "HRDsum",
-                         "HRD_LOHLST", "TAI", "interpretation"), names(d))
+                         "HRD_LOH", "LST", "TAI", "interpretation"), names(d))
     datatable(d[, ..cols], options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE)
   })
 
@@ -119,9 +119,9 @@ server <- function(input, output, session) {
       { if (nrow(sel) && !has_ggrepel) geom_text(data = sel,
                                                   aes(x = HRDsum, y = expHRD_exploratory, label = patient_id),
                                                   size = 3.5, color = "black", vjust = -1) } +
-      labs(title = "expHRD (exploratory) vs Ground-Truth HRDsum",
+      labs(title = "expHRD (exploratory) vs Reference HRDsum",
            subtitle = paste0(nrow(sel), " patient(s) highlighted"),
-           x = "HRDsum (ground truth)", y = "expHRD_exploratory") +
+           x = "HRDsum (reference)", y = "expHRD_exploratory") +
       theme_minimal(base_size = 13)
   })
 

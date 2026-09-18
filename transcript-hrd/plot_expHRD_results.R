@@ -79,7 +79,7 @@ d_ranked$rank <- seq_len(nrow(d_ranked))
 p3 <- ggplot(d_ranked, aes(x = rank, y = expHRD_exploratory, fill = expHRD_exploratory > 0)) +
   geom_col(width = 1) +
   scale_fill_manual(values = c("TRUE" = "#D73027", "FALSE" = "#4575B4"),
-                     labels = c("TRUE" = "HRD-high (>0)", "FALSE" = "HRD-low (\u22640)"),
+                     labels = c("TRUE" = "Positive score (>0)", "FALSE" = "Non-positive score (\u22640)"),
                      name = NULL) +
   labs(
     title = "Samples Ranked by Exploratory expHRD Score",
