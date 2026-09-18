@@ -1,0 +1,22 @@
+# expHRD pipeline environment (Apple Silicon / Linux).
+# Bioconductor packages (GSVA, org.Hs.eg.db, AnnotationDbi, BiocParallel) are not
+# available on bioconda for osx-arm64, so they are installed from Bioconductor
+# after env creation via:  Rscript --vanilla run_expHRD_EBPlusPlus.R --install-deps
+name: exphrd
+channels:
+  - conda-forge
+dependencies:
+  - r-base=4.4
+  - r-data.table
+  - r-ggplot2
+  - r-ggrepel
+  - r-shiny
+  - r-dt
+  - r-biocmanager
+  - r-matrixstats
+  - r-rcpp
+  - c-compiler
+  - cxx-compiler
+  - fortran-compiler
+  - make
+  - pkg-config
