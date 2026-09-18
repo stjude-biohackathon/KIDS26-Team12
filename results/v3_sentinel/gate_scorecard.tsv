@@ -1,0 +1,8 @@
+gate	description	threshold	baseline	observed	pass
+G1	Macro within-tissue Pearson, ex-THCA	>= 0.7096	0.7596	0.7688	TRUE
+G2	BRCA within-tissue Pearson	>= 0.5823	0.6323	0.6729	TRUE
+G3	Tissue R2 of predictions (MECHANISM GATE)	<= 0.4919	0.5219	0.2991	TRUE
+G4	Pooled MAE	<= 12.1430	11.0390	8.6137	TRUE
+G5	Mean absolute tissue bias	<= 5.6740	5.1581	3.2029	TRUE
+G6	Non-THCA tissues not individually degraded (of 3)	>= 2 of 3	3 of 3	3 of 3	TRUE
+G7	Provenance: feature_rank + target_transform recorded	all TRUE	-	feature_rank=TRUE target_transform=TRUE	TRUE

@@ -1,0 +1,16 @@
+%% fig01_workflow.mmd -- KIDS26-Team12 evaluation design
+%% Render: mermaid-cli  ->  mmdc -i fig01_workflow.mmd -o fig01_workflow.png -s 3
+flowchart TD
+    A["TCGA non-CNS development cohort<br/>7,065 specimens &middot; 30 cancer types"]
+    B["Nested leave-one-cancer-out (LOCO)<br/>outer loop: hold out 1 cancer type<br/>inner folds: one per training cancer type"]
+    C["Candidate selection<br/>inner-fold metrics only<br/>held-out cancer never seen"]
+    D["FREEZE<br/>single candidate, hyperparameters<br/>and decision rules locked"]
+    E["LOCKED CNS cohort<br/>642 GBM + LGG<br/>external test, opened ONCE"]
+    A --> B --> C --> D --> E
+    D -. "no refitting, no re-selection<br/>after the freeze" .-> E
+    classDef dev  fill:#e7eff7,stroke:#1F4E79,stroke-width:2px,color:#102a43;
+    classDef frz  fill:#d1e7dd,stroke:#0F5132,stroke-width:2px,color:#0F5132;
+    classDef lock fill:#f8d7da,stroke:#B02A37,stroke-width:3px,color:#7a1420;
+    class A,B,C dev;
+    class D frz;
+    class E lock;
