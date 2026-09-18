@@ -45,7 +45,9 @@ transfer* remain plans, not findings. The lock is still closed.
 | **B15** → partly resolved | `matrixStats`/`digest` added to `setup.R`; `renv.lock` snapshot still owed |
 | **C1b** → strengthened | EB shrinkage **inverts the k=3 verdict**: harmful → +40% of oracle gain |
 | **C1c** → not supported by the cheap screen | percentile remap adds zero ranking information and *increases* tissue R² |
-| C1 sentinel | array `323195423`, four folds, `priority` queue, gates pre-registered |
+| **C1c** → **REFUTED for V1/V2** | sentinel `323195423` failed 3 of 7 gates; tissue R² **57.6%** vs 52.7% for the absolute model; V3 untested |
+| C1 sentinel | array `323195423`, 4/4 complete, gates scored in `docs/26` §7 — **full array NOT authorised** |
+| **CNS lock** | **stays closed** — C1 is more firmly unresolved, not less |
 
 ---
 
@@ -653,7 +655,8 @@ graph TD
     CONTINUE --> C4["C4 OV n=10 disclosure<br/>OPEN - 27k array excluded"]
 
     C1 --> C1B["C1b few-shot calibration<br/>STRENGTHENED - EB shrinkage<br/>makes k=3 helpful (+40% oracle)<br/>but still needs labels"]
-    C1 --> C1R["C1c relative-target model<br/>SENTINEL RUNNING - array 323195423<br/>percentile remap FAILED screen<br/>tissue R2 rose 0.562 to 0.593"]
+    C1 --> C1R["C1c relative-target model<br/>V1/V2 REFUTED - sentinel failed<br/>3 of 7 gates: macro rho -0.219,<br/>BRCA -0.405, tissue R2 57.6%"]
+    C1R --> V3["V3 within-tissue feature ranking<br/>UNTESTED - attacks the diagnosed<br/>mechanism (pooled-variance filter)"]
 
     C1B --> LOCK
     C1R --> LOCK
@@ -795,10 +798,56 @@ tissues only. Fitting it on the held-out tissue is leakage and voids the fold.
 > **The honest test of C1c is the relative-target model**, which learns from a
 > within-tissue target instead of remapping afterwards. Implemented in
 > `R/rank_model.R` with 12 leakage/invariance tests passing; validated on
-> synthetic data only (transfers at ρ ≈ 0.96, manufactures nothing under a pure
-> tissue intercept or a noise negative control). **Sentinel array `323195423`
-> (BRCA, KICH, THCA, UCEC) submitted to the `priority` queue 2026-09-17 19:37.**
-> Gates are pre-registered in `docs/26_C1_N_OF_1_WORKAROUND.md` §7; see **B16**.
+> synthetic data (transfers at ρ ≈ 0.96, manufactures nothing under a pure
+> tissue intercept or a noise negative control).
+
+> ### C1c SENTINEL RAN AND FAILED 2026-09-17 ~21:00 — array `323195423`
+>
+> Four folds, `priority` queue, variant V2. All completed, zero errors, all
+> lambdas interior. **Three of seven pre-registered gates failed, including both
+> load-bearing ones. The full 30-fold rank array is NOT authorised.**
+>
+> | Fold | Rank ρ | Run 01 ρ | Δ |
+> |---|---:|---:|---:|
+> | UCEC | 0.550 | 0.703 | −0.154 |
+> | BRCA | 0.261 | 0.666 | **−0.405** |
+> | KICH | 0.443 | 0.543 | −0.101 |
+> | THCA † | 0.125 | −0.029 | +0.154 |
+>
+> † negative control; its near-constant target makes rank evaluation degenerate,
+> so its "gain" is the artefact the gate exists to catch.
+>
+> Macro ρ excluding THCA: **0.418 vs 0.637, Δ = −0.219**. Tissue identity
+> explains **57.6%** of the relative score versus **52.7%** for the absolute
+> prediction on the same samples, against a **0.001** floor set by the true
+> relative target.
+>
+> **The model did not manufacture signal** — every fold beats its within-tissue
+> permutation null at p ≤ 0.004. It simply learned *less* than the absolute
+> model while remaining *more* tissue-confounded.
+>
+> **Diagnosed mechanism.** The 5,000-probe filter ranks by **pooled** variance
+> and runs *before* the target is consulted, so it selects lineage-discriminating
+> probes. Changing the target cannot undo a feature set already chosen for
+> between-tissue variance.
+>
+> **C1c is therefore REFUTED for the pooled-feature variants (V1/V2).** One
+> pointwise option survives and is untested: **V3**, which ranks probes by
+> training-only *within-tissue* variance and attacks the diagnosed mechanism
+> directly. Implementation is written and benchmarked (~2.2 min for 336,480
+> probes). This is the highest-value next C1 experiment.
+>
+> **Pediatric consequence — see `docs/26` §7b.** Both routes to an n-of-1
+> pediatric answer are now closed. Absolute HRDsum on a new tumour type carries a
+> 95% predictive offset interval of **−9.7 to +8.1 units** (74% of the label's
+> own IQR); among the 1,171 patients within ±10 units of the threshold, a
+> tissue-level offset flips the HRD-high call for a median of **9.1%** of them
+> (up to 79.2%). The relative-rank escape hatch is majority tissue identity.
+> Only the **labelled** path survives: ~10 PBTP labels, which we do not have.
+>
+> **The CNS lock stays closed.** It opens once, after C1–C4; C1 is now more
+> firmly unresolved, not less.
+
 
 
 ### C2. Unbounded predictions against a zero-floored label — **PARTLY RESOLVED**

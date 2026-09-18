@@ -1,8 +1,14 @@
 # 26 — C1: Unseen-Tissue Calibration Offset and the n-of-1 Workaround
 
-**Status:** investigation complete for Phases A–B (real data) and Phase C–D (synthetic
-validation only). Sentinel folds NOT yet run — the cluster was occupied by the
-`kids26_c2full` log1p array (LSF job 323176856) throughout this work.
+**Status:** investigation complete for Phases A–B (real data), Phase C–D (synthetic
+validation), and the **four sentinel folds, which RAN and FAILED their gates**
+(LSF array `323195423`, `priority` queue, 4/4 complete 2026-09-17 ~21:00, zero
+errors). See §7 for the scorecard and §8 for the revised verdict.
+
+**Headline:** the full 30-fold rank array is **NOT authorised**. Three of seven
+pre-registered gates failed, including both load-bearing ones. The relative-target
+model is *more* tissue-confounded than the absolute model it was meant to replace.
+
 
 **Scope.** This document addresses blocker C1: the model carries a tissue-specific
 additive offset (mean |offset| = 3.46 HRD units) that cannot be estimated for a tumour
@@ -289,29 +295,174 @@ Two tests exposed real problems, both fixed in the code rather than by weakening
 
 ---
 
-## 7. Sentinel plan (not yet executed)
+## 7. Sentinel results — RAN 2026-09-17, GATES FAILED
 
-Four outer folds only — **BRCA, UCEC, THCA, KICH** — to be run when the `kids26_c2full`
-log1p array has drained and the `biohackathon` queue is free.
+LSF array `323195423`, `priority` queue, variant V2 (`normal_score` / `tissue` /
+`pooled`). All four folds completed, zero errors, every stderr empty, every
+selected lambda **interior** to its data-derived path (alpha = 1 in all four).
+Fits took 64–86 min against run 01's 45–54 min; the difference is node
+contention on the shared `priority` hosts (49–64 jobs, load 41–60), not extra
+model cost. Peak RSS 129–174 GB against 240 GB reserved.
 
 ```bash
-Rscript scripts/c1_rank_one_fold.R data/processed/beta.tsv \
-        data/processed/master_samples.tsv \
-        results/c1_rank_probe <fold_index> normal_score tissue pooled
+# Reproduce:
+bsub < scripts/lsf_c1_rank_sentinel.bsub
 ```
 
-**Gates for recommending a full 30-fold rank array.** All must hold:
+### Per-fold results against run 01
 
-- macro within-tissue discrimination not materially worse than run 01 (within-tissue r = 0.612,
-  ρ = 0.601);
-- BRCA shows no large discrimination loss (run 01: r = 0.632, ρ = 0.666);
-- THCA is **not** presented as a success — its within-tissue target is near-constant
-  (run 01 r = −0.032, ρ = −0.029), so rank evaluation there is close to meaningless and it serves
-  as a negative control, not a win condition;
-- tissue identity explains substantially less of the new output than the current 56.2%;
-- at least 3 of 4 sentinel folds show positive rank association;
-- the model beats an honest relative-target null;
-- all leakage and n-of-1 invariance tests pass.
+| Fold | n | Rank ρ | Run 01 ρ | Δρ | Run 01 r | Perm p |
+|---|---:|---:|---:|---:|---:|---:|
+| UCEC | 403 | 0.550 | 0.703 | **−0.154** | 0.758 | 0.002 |
+| BRCA | 743 | 0.261 | 0.666 | **−0.405** | 0.632 | 0.002 |
+| KICH | 65 | 0.443 | 0.543 | −0.101 | 0.803 | 0.002 |
+| THCA † | 464 | 0.125 | −0.029 | +0.154 | −0.032 | 0.004 |
+
+† **THCA is the negative control, not a win.** Its within-tissue target is
+near-constant, so the rank transform is degenerate there. Its apparent
+"improvement" is exactly the artefact the gate was written to catch — counting it
+would repeat the C2/log1p preview error (see B16).
+
+Macro ρ **excluding THCA**: **0.418** (rank) vs **0.637** (run 01), Δ = **−0.219**.
+
+### Gate scorecard
+
+| # | Gate | Result | Verdict |
+|---|---|---|---|
+| 1 | Macro discrimination not materially worse than run 01 | ρ 0.418 vs 0.637, **−0.219** | ❌ **FAIL** |
+| 2 | BRCA shows no large discrimination loss | ρ 0.261 vs 0.666, **−0.405** | ❌ **FAIL** |
+| 3 | THCA not presented as successful | flagged degenerate, excluded from macro | ✅ honoured |
+| 4 | Tissue identity explains substantially less than 56.2% | **57.6%** vs 52.7% for the absolute model on the same samples | ❌ **FAIL** |
+| 5 | ≥3 of 4 folds show positive rank association | 4/4 positive | ✅ PASS |
+| 6 | Beats an honest relative-target null | perm p ≤ 0.004 in all folds | ✅ PASS |
+| 7 | All leakage / n-of-1 invariance tests pass | 12/12, plus 7/7 (B13) and 10/10 (B14) | ✅ PASS |
+
+**Three gates failed, including both load-bearing ones. The full 30-fold rank
+array is NOT authorised.**
+
+### Tissue-identity R², apples to apples
+
+Same four tissues, same samples, both quantities pooled across the four held-out
+folds:
+
+| Quantity | Tissue R² |
+|---|---:|
+| Rank model `relative_score` | **0.576** |
+| Run 01 absolute prediction | 0.527 |
+| **True relative target (the floor)** | **0.001** |
+
+This is the decisive number. A genuine within-tissue score should approach the
+0.001 floor. The rank model sits at 0.576 — *higher* than the absolute prediction
+it was designed to improve on.
+
+### What this means, mechanistically
+
+The model learned something real: every fold beats its within-tissue permutation
+null at p ≤ 0.004, and the negative controls in `tests/test_c1_rank_model.R`
+confirm the machinery does not manufacture signal. But it learned **less** than
+the absolute model, and it **did not remove the tissue confound it was built to
+remove**.
+
+The likely mechanism is feature selection. The 5,000-probe filter ranks by
+**pooled** variance and runs *before* the target is ever consulted, so it
+preferentially selects lineage-discriminating probes. Changing the target to a
+within-tissue quantity cannot undo a feature set already chosen for between-tissue
+variance. **V3 (`feature_rank = "within_tissue"`) is the untested variant that
+addresses exactly this**, and its blocked implementation is already written and
+benchmarked (~2.2 min for all 336,480 probes). It is the one remaining pointwise
+option that has not been falsified.
+
+This also confirms, with a properly trained model, what Phase B found with a
+post-hoc mapping: **a monotone remap of a tissue-confounded score is still a
+tissue-confounded score, and training on a relative target is not by itself
+sufficient to fix it.**
+
+---
+
+## 7b. What C1 means for the pediatric transfer goal
+
+This is the section that matters for the flash talk, because pediatric HGG
+transfer is the project's stated purpose. **The failure closes both routes to an
+n-of-1 pediatric answer, for the same underlying reason.**
+
+### Route 1 — report an absolute HRDsum. Blocked.
+
+The per-tissue offset is not estimable without target-domain labels. Across the
+30 development tissues the offsets span **−15.44 (SARC) to +8.29 (PCPG)**, mean
+|offset| 3.46, SD 4.83. Treating those 30 as the predictive distribution for the
+next unseen tissue — which is what they are, since label-free regression on tissue
+covariates failed at LOTO R² = −0.116 and the offset is uncorrelated with every
+available covariate (|r| ≤ 0.267) — gives a
+
+> **95% predictive interval for a new tumour type's offset: −9.7 to +8.1 HRD
+> units, a width of 17.8 units — 74% as wide as the interquartile range of the
+> label itself (4 to 28).**
+
+A pediatric tumour type is **one draw** from that distribution, and nothing we can
+measure narrows it. GBM and LGG remain locked, so their offsets are unknown; the
+nearest available lineage proxies are not reassuring (SARC −15.4, UVM −2.3,
+TGCT +2.0, THCA +8.0, PCPG +8.3).
+
+**On the scale of the decision.** At the exploratory threshold of 42, the
+population-wide flip rate looks mild at ~1.5% — but that is an artefact of where
+the threshold sits, since only 10.6% of the cohort exceeds it. The operative
+question is conditional:
+
+> **Among the 1,171 patients within ±10 units of the threshold — precisely the
+> patients for whom a test is supposed to add information — a tissue-level offset
+> flips the HRD-high call for a median of 9.1% of them, and up to 79.2% in the
+> worst tissue.**
+
+Roughly one borderline patient in eleven would be reclassified by a constant
+belonging to their tumour type rather than by their own biology.
+
+### Route 2 — report a within-tissue rank instead. Now also blocked.
+
+This was the designed escape hatch: decline the absolute claim and report ordering
+within the tumour type, which is offset-invariant by construction. **Today's
+sentinel closed it.** The relative score is 57.6% tissue identity against a 0.1%
+floor, and BRCA discrimination fell by 0.405.
+
+**This matters more for pediatrics than for the TCGA tissues.** 89% of the cohort
+sits below the threshold, and pediatric HGG is expected to sit in that low-HRD
+regime, where a binary "HRD-high" call is almost never the useful output and
+**relative ordering is** — which is exactly the output now shown to be majority
+tissue identity.
+
+### What survives
+
+**The shrinkage result (§2) is the one intact path**, and it is a real one: with
+~10 labelled samples from the new tumour type, k=10 recovers 58% of achievable
+gain, and EB shrinkage makes k=3 safe where the unshrunk mean is harmful. For a
+pediatric cohort this is viable — but it **requires PBTP labels**, which we do not
+have and did not touch, and it is **not n-of-1**.
+
+### Honest statement for the talk
+
+> We can rank tumours within a known type, and we can calibrate to a new type
+> given ~10 labelled examples. We cannot yet place a single patient from an unseen
+> tumour type on an absolute HRD scale, and our attempt to sidestep that with a
+> relative score produced an output that is 58% tissue identity. The CNS partition
+> is still sealed, because the calibration problem that would make a CNS number
+> interpretable is not solved.
+
+---
+
+## 7c. Sentinel plan as originally pre-registered (retained for audit)
+
+Recorded before the run, unchanged, so the scorecard above cannot be read as
+post-hoc:
+
+Four outer folds only — **BRCA, UCEC, THCA, KICH** — chosen a priori to span the
+failure modes: BRCA as the largest tissue, KICH as the strongest run-01
+within-tissue signal in a small cohort, UCEC as high-signal with the largest
+positive offset, THCA as a **negative control** whose near-constant target makes
+rank evaluation degenerate.
+
+Gates: macro discrimination not materially worse than run 01; no large BRCA loss;
+THCA not counted as success; tissue identity substantially below 56.2%; ≥3 of 4
+folds positive; beats an honest relative-target null; all leakage tests pass.
+
 
 ---
 
@@ -320,7 +471,7 @@ Rscript scripts/c1_rank_one_fold.R data/processed/beta.tsv \
 **Which is supported: (A) hierarchical few-shot calibration, (B) a zero-shot relative score,
 (C) both, or (D) neither?**
 
-**A, conditionally. B is not yet supported and Phase B alone argues against it.**
+**A only. B is now REFUTED, not merely unproven.**
 
 - **A — supported with caveats.** Empirical-Bayes shrinkage rescues k = 1, 3, and 5 in the macro
   mean, converting a harmful correction into a beneficial one, and beats the fair hierarchical
@@ -328,14 +479,23 @@ Rscript scripts/c1_rank_one_fold.R data/processed/beta.tsv \
   the entire benefit is concentrated in tissues whose true offset is large. It requires labels and
   therefore does **not** solve n-of-1 inference. Its value is that a future small pediatric or CNS
   calibration panel (k ≥ 3, ideally k ≥ 10) could be used without making predictions worse.
-- **B — not supported on current evidence.** Zero-shot percentile triage clears its nulls on MAE
-  and AUROC, but adds literally zero ranking information over the raw prediction, is badly
-  miscalibrated within tissue (macro slope 2.61), barely clears the Brier null (21/30), and — most
-  damaging — its output is *more* explained by tissue identity (R² = 0.593) than the raw prediction
-  it was derived from (0.562). A monotone remap of a tissue-confounded score is still a
-  tissue-confounded score. The relative-target model of Phase C is the honest test of hypothesis
-  H2, and it has been validated only on synthetic data. Until the four sentinel folds run, B is
-  **unproven, not refuted**.
+- **B — REFUTED on the evidence now available.** The earlier draft of this document recorded B as
+  "unproven, not refuted", pending the sentinel folds. **The sentinel folds have run.** Both
+  implementations of a zero-shot relative score have now failed on the same axis:
+  - the post-hoc percentile remap (§3) adds *zero* ranking information and raises tissue R² from
+    0.562 to 0.593;
+  - the properly trained relative-target model (§7) loses 0.219 macro ρ against run 01, loses
+    0.405 on BRCA, and raises tissue R² to **0.576** against a 0.001 floor.
+
+  Two independent methods, the same failure. Training on a within-tissue target is **not
+  sufficient** to remove lineage when the feature set was selected for between-tissue variance.
+
+**One pointwise option remains untested and is not covered by this refutation: V3**
+(`feature_rank = "within_tissue"`), which replaces pooled-variance probe ranking with
+training-only *within-tissue* variance ranking. That addresses the diagnosed mechanism directly
+rather than working around it, the blocked implementation is written and benchmarked (~2.2 min
+across 336,480 probes), and it has not been run on real data. It is the single highest-value next
+experiment for C1c. The Phase D pairwise ranker remains a contingency behind it.
 
 ### What remains unidentified without target-domain labels
 
@@ -344,9 +504,14 @@ label-free offset regression failing (best LOTO R² = −0.116), and Phase A exp
 cross-tissue offset spread (τ² = 22.3) is small relative to within-tissue residual noise
 (σ² = 108.6), so there is little between-tissue structure for a label-free predictor to exploit,
 and the pan-cancer mean offset is near zero. Phase B shows that a monotone remap cannot recover it
-either. **Any absolute HRDsum reported for an unseen tumour type carries an unquantified additive
-bias with a plausible magnitude of several HRD units.** A relative/percentile output sidesteps the
-offset by refusing to make an absolute claim — it does not estimate it.
+either, and §7 shows that a trained relative target does not either.
+
+**Any absolute HRDsum reported for an unseen tumour type carries an unquantified additive bias with
+a 95% predictive interval of −9.7 to +8.1 HRD units** (§7b) — 74% as wide as the label's own
+interquartile range. A relative/percentile output sidesteps the offset by refusing to make an
+absolute claim, but the sentinel shows our current relative output is majority tissue identity, so
+it does not yet deliver a trustworthy within-tissue ordering either.
+
 
 ### Standing caveats
 
