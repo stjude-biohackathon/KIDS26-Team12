@@ -1,0 +1,4 @@
+framing	n_positive	prevalence	AUC	ci_low	ci_high	note
+Absolute HRDsum >= 42 (pooled)	751	10.6%	0.8659	0.8546	0.8776	Exploratory cutoff; inflated by between-tissue HRD differences
+Tissue-identity-only control (pooled)	751	10.6%	0.7228			No within-patient information; the shortcut a pooled AUC rewards
+Within-tissue top quartile (tissue-centred)	1659	23.5%	0.7767	0.7644	0.7889	The defensible ranking claim

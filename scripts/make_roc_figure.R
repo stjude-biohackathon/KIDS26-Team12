@@ -55,16 +55,26 @@ source("R/figures.R")
 SEED <- 4827
 set.seed(SEED)
 
-IN   <- "results/loco_run01/loco_predictions.tsv"
-OUTF <- "results/figures/fig09_roc_both_ways.png"
-OUTT <- "results/tables/roc_summary.tsv"
-if (!file.exists(IN)) stop("Missing input: ", IN)
+# CLI, defaulting EXACTLY to the Candidate A invocation that produced fig09, so
+# that figure stays reproducible from a bare `Rscript scripts/make_roc_figure.R`.
+#   <input spec (file or glob)> <output png> <output tsv> <model label>
+args <- commandArgs(trailingOnly = TRUE)
+IN    <- if (length(args) >= 1) args[1] else "results/loco_run01/loco_predictions.tsv"
+OUTF  <- if (length(args) >= 2) args[2] else "results/figures/fig09_roc_both_ways.png"
+OUTT  <- if (length(args) >= 3) args[3] else "results/tables/roc_summary.tsv"
+LABEL <- if (length(args) >= 4) args[4] else
+  "Frozen Candidate A: pooled features, alpha 0.1, 774 non-zero coefficients."
+
 dir.create("results/figures", showWarnings = FALSE, recursive = TRUE)
 dir.create("results/tables",  showWarnings = FALSE, recursive = TRUE)
 
-d <- fread(IN)
+files <- Sys.glob(IN)
+if (!length(files)) stop("No input matched: ", IN)
+d <- rbindlist(lapply(files, fread), fill = TRUE)
 if (any(d$cancer_type %in% c("GBM", "LGG")))
   stop("CNS rows present in a development figure - refusing to plot.")
+if (nrow(d) != 7065L)
+  stop("Expected 7,065 development predictions, got ", nrow(d))
 
 # Adopted C2 rule: negative HRDsum is physically meaningless.
 d[, pred_clip := pmax(predicted_reference_HRDsum, 0)]
@@ -146,9 +156,9 @@ if (!requireNamespace("patchwork", quietly = TRUE))
 g <- patchwork::wrap_plots(gA, gB, nrow = 1) +
   patchwork::plot_annotation(
     title = "Methylation-derived HRD score: ranking performance two ways",
-    subtitle = paste0("Frozen Candidate A: pooled features, alpha 0.1, 774 non-zero coefficients.\n",
+    subtitle = paste0(LABEL, "\n",
                       "7,065 adult TCGA samples, 30 non-CNS types, each held out by cancer type.\n",
-                      "Development result - not a validated assay, not a probability. Locked CNS cohort not scored."),
+                      "Development result - not a validated assay, not a probability."),
     theme = theme_kids26()
   )
 save_fig(g, OUTF, width = 13.5, height = 6.6)
