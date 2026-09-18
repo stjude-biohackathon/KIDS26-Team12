@@ -1,8 +1,8 @@
 # modules/mod_hrd_exp.R
-# Tab 3 — HRD Transcriptome (exp-HRD)
+# Tab 3: HRD Transcriptome (exp-HRD)
 #
 # Data recipe from the task guide. exp_HRD is a PLACEHOLDER until real
-# classifier output arrives — replace that one assignment when it lands.
+# classifier output arrives - replace that one assignment when it lands.
 #
 # From repo root:
 #   source("modules/mod_hrd_exp.R")
@@ -35,7 +35,7 @@ prepare_hrd_exp_sample_data <- function() {
     sample_data <- unique(samples[, .(sample_id, cancer_type, HRDsum, purity, ploidy)])
   }
 
-  # placeholder exp-HRD score — REMOVE once real classifier output arrives
+  # placeholder exp-HRD score - REMOVE once real classifier output arrives
   set.seed(2)
   sample_data$exp_HRD <- sample_data$HRDsum + rnorm(nrow(sample_data), 0, 3)
 
@@ -81,43 +81,62 @@ build_genome_plot <- function(sample_data) {
     )
 }
 
-build_compare_plot <- function(sample_data) {
-  lim <- range(c(sample_data$HRDsum, sample_data$exp_HRD), finite = TRUE)
-  fit <- stats::lm(exp_HRD ~ HRDsum, data = sample_data)
+build_compare_plot <- function(sample_data, cancer_type) {
+  cancer_type <- as.character(cancer_type)[[1]]
+  if (!nzchar(cancer_type) || !cancer_type %in% sample_data$cancer_type) {
+    return(
+      ggplot() +
+        annotate("text", x = 0.5, y = 0.5, label = "Select a cancer type", size = 5, colour = "#666") +
+        theme_void()
+    )
+  }
 
-  dittoViz::scatterPlot(
-    sample_data,
-    x.by = "HRDsum",
-    y.by = "exp_HRD",
-    color.by = "cancer_type",
-    # dittoViz: add.abline is the intercept (0 => y = x)
-    add.abline = 0,
-    abline.slope = 1,
-    abline.linetype = "dashed",
-    abline.color = "grey40",
-    do.hover = FALSE,
-    do.raster = TRUE,
-    legend.show = TRUE,
-    main = NULL,
-    xlab = "HRDsum (genome)",
-    ylab = "exp_HRD"
-  ) +
+  d <- sample_data[sample_data$cancer_type == cancer_type, , drop = FALSE]
+  d$cancer_type <- factor(d$cancer_type, levels = cancer_type)
+  lim <- range(c(sample_data$HRDsum, sample_data$exp_HRD), finite = TRUE)
+
+  # One cancer facet at a time: identity line + lm
+  ggplot(d, aes(.data$HRDsum, .data$exp_HRD)) +
+    geom_point(size = 1.6, alpha = 0.55, stroke = 0, shape = 16, colour = "#2a6f7c") +
     geom_abline(
-      intercept = stats::coef(fit)[[1]],
-      slope = stats::coef(fit)[[2]],
-      colour = "#1F77B4",
-      linewidth = 1.2
+      intercept = 0,
+      slope = 1,
+      linetype = "dashed",
+      colour = "grey40",
+      linewidth = 0.6
     ) +
+    geom_smooth(
+      method = "lm",
+      formula = y ~ x,
+      se = FALSE,
+      colour = "#222222",
+      linewidth = 0.9,
+      na.rm = TRUE
+    ) +
+    facet_wrap(~cancer_type) +
     coord_cartesian(xlim = lim, ylim = lim) +
-    .theme_panel(14) +
+    labs(x = "HRDsum", y = "exp_HRD") +
+    theme_bw(base_size = 14) +
     theme(
-      legend.position = "right",
-      legend.title = element_blank(),
-      legend.text = element_text(size = 9),
-      legend.key.size = grid::unit(0.4, "cm"),
-      legend.spacing.y = grid::unit(0.08, "cm")
-    ) +
-    guides(colour = guide_legend(ncol = 2, override.aes = list(size = 2.2, alpha = 1)))
+      plot.title = element_blank(),
+      plot.background = element_rect(fill = "#ffffff", colour = NA),
+      panel.background = element_rect(fill = "#ffffff", colour = NA),
+      panel.border = element_blank(),
+      axis.line = element_line(colour = "#bbbbbb", linewidth = 0.4),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = "#f0f0f0"),
+      legend.position = "none",
+      strip.text = element_text(size = 13, face = "bold", colour = "#111111", hjust = 0.5),
+      strip.background = element_blank(),
+      axis.title.x = element_text(margin = margin(t = 8)),
+      axis.title.y = element_text(margin = margin(r = 8)),
+      plot.margin = margin(12, 20, 18, 14)
+    )
+}
+
+default_cancer_type <- function(sample_data) {
+  counts <- sort(table(sample_data$cancer_type), decreasing = TRUE)
+  names(counts)[[1]]
 }
 
 build_qc_plot <- function(sample_data) {
@@ -128,12 +147,13 @@ build_qc_plot <- function(sample_data) {
     x.by = "purity",
     y.by = "exp_HRD",
     do.hover = FALSE,
-    do.raster = TRUE,
+    do.raster = FALSE,
     legend.show = FALSE,
     main = NULL,
     xlab = "purity",
     ylab = "exp_HRD",
-    opacity = 0.55
+    opacity = 0.55,
+    size = 0.7
   ) +
     .theme_panel(14)
 }
@@ -145,75 +165,201 @@ hrdExpUI <- function(id) {
 
   tagList(
     tags$style(HTML(sprintf("
+      html, body {
+        background: #ffffff !important;
+        margin: 0;
+        padding: 0;
+      }
+      .container-fluid {
+        padding-left: 0 !important;
+        padding-right: 0 !important;
+        background: #ffffff !important;
+      }
       #%s {
         height: 100vh;
         overflow: hidden;
-        padding: 8px 12px;
+        padding: 10px 20px 12px;
         box-sizing: border-box;
-        background: #f7f7f7;
+        background: #ffffff;
+        font-family: 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        accent-color: #222;
       }
       #%s .hrd-bar {
         display: flex;
         align-items: center;
-        gap: 18px;
-        height: 32px;
-        margin-bottom: 6px;
+        justify-content: center;
+        gap: 12px;
+        min-height: 28px;
+        margin-bottom: 8px;
       }
-      #%s .hrd-bar .shiny-input-container { margin: 0; padding: 0; }
-      #%s .hrd-bar label { font-size: 13px; margin: 0; font-weight: 500; }
-      #%s .hrd-note { font-size: 12px; color: #666; margin: 0; }
-      #%s .tabbable, #%s .tab-content, #%s .tab-pane.active {
-        height: calc(100vh - 52px);
+      #%s .hrd-bar .shiny-input-container,
+      #%s .hrd-bar .form-group {
+        margin: 0 !important;
+        padding: 0 !important;
+        width: auto !important;
+        max-width: none !important;
       }
-      #%s .tab-content {
-        overflow: hidden;
-        background: #fff;
-        border: 1px solid #ddd;
-        border-top: none;
-        border-radius: 0 0 4px 4px;
-        padding: 8px 12px;
-        box-sizing: border-box;
+      #%s .hrd-bar label {
+        font-size: 12px;
+        margin: 0;
+        font-weight: 400;
+        color: #555;
       }
-      #%s .nav-tabs { margin-bottom: 0; border-bottom: 2px solid #147d92; }
+      #%s .tabbable {
+        height: calc(100vh - 46px);
+        display: flex;
+        flex-direction: column;
+        background: #ffffff;
+        border: none;
+      }
+      #%s .nav-tabs {
+        margin: 0 auto;
+        border: none;
+        border-bottom: 1px solid #ebebeb;
+        padding: 0;
+        flex: 0 0 auto;
+        background: #ffffff;
+        display: flex !important;
+        justify-content: center;
+        width: 100%%;
+      }
+      #%s .nav-tabs:before,
+      #%s .nav-tabs:after { display: none !important; content: none !important; }
+      #%s .nav-tabs > li {
+        margin-bottom: -1px;
+        float: none !important;
+      }
       #%s .nav-tabs > li > a {
         font-size: 13px;
-        color: #555;
+        color: #757575;
+        border: none !important;
+        border-radius: 0;
+        padding: 10px 16px 11px;
+        background: transparent !important;
+        margin-right: 4px;
+      }
+      #%s .nav-tabs > li > a:hover {
+        color: #222;
+        background: transparent !important;
+        border: none !important;
       }
       #%s .nav-tabs > li.active > a,
       #%s .nav-tabs > li.active > a:hover,
       #%s .nav-tabs > li.active > a:focus {
-        color: #0b4f5c;
-        font-weight: 700;
-        border-top: 3px solid #147d92;
-        background: #fff;
+        color: #111;
+        font-weight: 600;
+        background: #ffffff !important;
+        border: none !important;
+        border-bottom: 2px solid #111 !important;
+        padding-bottom: 9px;
       }
-      #%s .hrd-page-head {
-        margin: 0 0 6px 0;
+      #%s .tab-content {
+        flex: 1 1 auto;
+        overflow: hidden;
+        background: #ffffff;
+        border: none;
+        padding: 10px 16px 10px;
+        box-sizing: border-box;
       }
-      #%s .hrd-page-head h4 {
+      #%s .tab-pane.active {
+        height: 100%%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 0;
+      }
+      #%s .hrd-page {
+        height: 100%%;
+        width: 100%%;
+        max-width: 880px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 0;
+        background: #ffffff;
+      }
+      #%s .hrd-page-with-select {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        gap: 8px;
+      }
+      #%s .hrd-page-plot {
+        width: 100%%;
+        max-width: 880px;
+        height: calc(100vh - 125px);
+        flex: 0 0 auto;
+        background: #ffffff;
+        overflow: hidden;
+      }
+      #%s .hrd-page-with-select .hrd-page-plot {
+        height: calc(100vh - 185px);
+      }
+      #%s .hrd-page-plot .shiny-plot-output {
+        width: 100%% !important;
+        height: 100%% !important;
+        max-height: none !important;
+        min-height: 0 !important;
+        background: #ffffff !important;
+        border: none !important;
+        overflow: hidden;
+      }
+      #%s .hrd-page-plot .shiny-plot-output img {
+        display: block;
+        margin: 0 auto;
+        width: 100%%;
+        height: 100%% !important;
+        object-fit: contain;
+        object-position: center bottom;
+        background: #ffffff;
+        border: none;
+      }
+      #%s .hrd-compare-select {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%%;
+        padding: 0 0 4px;
+        background: #ffffff;
+        position: relative;
+        z-index: 2;
+      }
+      #%s .hrd-compare-select .shiny-input-container {
         margin: 0;
-        font-size: 15px;
-        font-weight: 700;
-        color: #0b4f5c;
+        width: auto;
+        text-align: center;
       }
-      #%s .hrd-page-head p {
-        margin: 2px 0 0 0;
+      #%s .hrd-compare-select label {
         font-size: 12px;
-        color: #666;
+        font-weight: 500;
+        color: #555;
+        margin-bottom: 4px;
+        display: block;
+        text-align: center;
+        width: 100%%;
       }
-      #%s .shiny-plot-output {
-        height: calc(100vh - 150px) !important;
+      #%s .hrd-compare-select select {
+        font-size: 13px;
+        height: 34px;
+        min-width: 160px;
+        border: 1px solid #d0d0d0;
+        border-radius: 2px;
+        padding: 2px 10px;
+        background: #ffffff;
+        color: #111;
       }
     ", ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
        ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
        ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
-       ns("wrap"), ns("wrap"), ns("wrap")))),
+       ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
+       ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"), ns("wrap"),
+       ns("wrap"), ns("wrap")))),
     div(
       id = ns("wrap"),
       div(
         class = "hrd-bar",
-        checkboxInput(ns("show_genome"), "Show genome-HRD page", value = TRUE),
-        span(class = "hrd-note", "exp_HRD is placeholder until classifier output arrives")
+        checkboxInput(ns("show_genome"), "Show genome-HRD", value = TRUE)
       ),
       uiOutput(ns("pages"))
     )
@@ -224,63 +370,92 @@ hrdExpServer <- function(id, sample_data) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
 
+    cancer_choices <- sort(unique(as.character(sample_data$cancer_type)))
+    default_cancer <- default_cancer_type(sample_data)
+
     genome_gg <- build_genome_plot(sample_data)
-    compare_gg <- build_compare_plot(sample_data)
     qc_gg <- build_qc_plot(sample_data)
 
     output$pages <- renderUI({
+      selected_cancer <- isolate(input$cancer)
+      if (is.null(selected_cancer) || !selected_cancer %in% cancer_choices) {
+        selected_cancer <- default_cancer
+      }
+      # Keep current tab when rebuilding for genome toggle
+      selected_page <- isolate(input$page)
+      if (is.null(selected_page)) selected_page <- "comparison"
+      if (!isTRUE(input$show_genome) && identical(selected_page, "genome")) {
+        selected_page <- "comparison"
+      }
+
       tabs <- list(
         tabPanel(
-          title = tagList(strong("Comparison"), " · exp vs genome"),
+          title = "Exp-HRD vs genome-HRD",
           value = "comparison",
           div(
-            class = "hrd-page-head",
-            h4("Comparison — exp-HRD vs genome HRDsum"),
-            p("Primary view · dashed line = y = x · blue line = linear fit · color = cancer type")
-          ),
-          plotOutput(ns("compare"), height = "100%")
+            class = "hrd-page hrd-page-with-select",
+            div(
+              class = "hrd-page-plot",
+              plotOutput(ns("compare"), height = "100%")
+            ),
+            div(
+              class = "hrd-compare-select",
+              selectInput(
+                ns("cancer"),
+                label = "Cancer type",
+                choices = cancer_choices,
+                selected = selected_cancer,
+                width = "200px",
+                selectize = FALSE
+              )
+            )
+          )
         ),
         tabPanel(
-          title = "QC · purity",
+          title = "QC",
           value = "qc",
           div(
-            class = "hrd-page-head",
-            h4("QC — purity vs exp-HRD"),
-            p("Confound check only")
-          ),
-          plotOutput(ns("qc"), height = "100%")
+            class = "hrd-page",
+            div(
+              class = "hrd-page-plot",
+              plotOutput(ns("qc"), height = "100%")
+            )
+          )
         )
       )
       if (isTRUE(input$show_genome)) {
         tabs <- c(tabs, list(tabPanel(
-          title = "Genome HRD",
+          title = "Genome-HRD",
           value = "genome",
           div(
-            class = "hrd-page-head",
-            h4("Genome HRD"),
-            p("Reference scar burden (HRDsum) by cancer type")
-          ),
-          plotOutput(ns("genome"), height = "100%")
+            class = "hrd-page",
+            div(
+              class = "hrd-page-plot",
+              plotOutput(ns("genome"), height = "100%")
+            )
+          )
         )))
       }
       do.call(
         tabsetPanel,
-        c(tabs, list(id = ns("page"), type = "tabs", selected = "comparison"))
+        c(tabs, list(id = ns("page"), type = "tabs", selected = selected_page))
       )
     })
 
     output$genome <- renderPlot({
-      req(isTRUE(input$show_genome))
+      req(isTRUE(input$show_genome), identical(input$page, "genome"))
       genome_gg
-    }, res = 120)
+    }, res = 110, width = 900, height = 700)
 
     output$compare <- renderPlot({
-      compare_gg
-    }, res = 120)
+      req(input$cancer)
+      build_compare_plot(sample_data, input$cancer)
+    }, res = 110, width = 900, height = 700)
 
     output$qc <- renderPlot({
+      req(identical(input$page, "qc"))
       qc_gg
-    }, res = 120)
+    }, res = 110, width = 900, height = 700)
   })
 }
 
