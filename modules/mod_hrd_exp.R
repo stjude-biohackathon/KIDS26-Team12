@@ -21,19 +21,19 @@ library(dittoViz)
 library(ggplot2)
 
 prepare_hrd_exp_sample_data <- function() {
-  source("R/adapters/adapt_ddr_scores.R", local = TRUE)
-
   # Sample-level fields only (Suzy's unique(...)). Prefer the samples table
   # directly so we do not melt the probe x sample beta matrix on every launch;
   # those columns are what adapt_ddr_scores() joins from master_samples.tsv.
   samples_path <- file.path("front_end_data", "ddr_scars", "master_samples.tsv")
   if (!file.exists(samples_path)) {
-    ddr_data <- adapt_ddr_scores()
-    sample_data <- unique(ddr_data[, .(sample_id, cancer_type, HRDsum, purity, ploidy)])
-  } else {
-    samples <- fread(samples_path)
-    sample_data <- unique(samples[, .(sample_id, cancer_type, HRDsum, purity, ploidy)])
+    stop(
+      "Missing required sample table: ", samples_path,
+      "\nRun from the repository root with front_end_data/ddr_scars available.",
+      call. = FALSE
+    )
   }
+  samples <- fread(samples_path)
+  sample_data <- unique(samples[, .(sample_id, cancer_type, HRDsum, purity, ploidy)])
 
   # placeholder exp-HRD score - REMOVE once real classifier output arrives
   set.seed(2)
@@ -165,24 +165,26 @@ hrdExpUI <- function(id) {
 
   tagList(
     tags$style(HTML(sprintf("
-      html, body {
-        background: #ffffff !important;
-        margin: 0;
-        padding: 0;
-      }
-      .container-fluid {
-        padding-left: 0 !important;
-        padding-right: 0 !important;
-        background: #ffffff !important;
-      }
       #%s {
-        height: 100vh;
+        min-height: 100vh;
         overflow: hidden;
         padding: 10px 20px 12px;
         box-sizing: border-box;
         background: #ffffff;
         font-family: 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif;
         accent-color: #222;
+        display: flex;
+        flex-direction: column;
+      }
+      #%s .hrd-placeholder-warning {
+        margin: 0 0 10px;
+        padding: 8px 12px;
+        border: 1px solid #f2c879;
+        background: #fff6df;
+        color: #6c4a00;
+        font-size: 12px;
+        line-height: 1.4;
+        text-align: center;
       }
       #%s .hrd-bar {
         display: flex;
@@ -206,9 +208,10 @@ hrdExpUI <- function(id) {
         color: #555;
       }
       #%s .tabbable {
-        height: calc(100vh - 46px);
         display: flex;
         flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
         background: #ffffff;
         border: none;
       }
@@ -288,13 +291,10 @@ hrdExpUI <- function(id) {
       #%s .hrd-page-plot {
         width: 100%%;
         max-width: 880px;
-        height: calc(100vh - 125px);
-        flex: 0 0 auto;
+        flex: 1 1 auto;
+        min-height: 0;
         background: #ffffff;
         overflow: hidden;
-      }
-      #%s .hrd-page-with-select .hrd-page-plot {
-        height: calc(100vh - 185px);
       }
       #%s .hrd-page-plot .shiny-plot-output {
         width: 100%% !important;
@@ -360,6 +360,10 @@ hrdExpUI <- function(id) {
       div(
         class = "hrd-bar",
         checkboxInput(ns("show_genome"), "Show genome-HRD", value = TRUE)
+      ),
+      div(
+        class = "hrd-placeholder-warning",
+        "Synthetic placeholder only: exp_HRD is generated from HRDsum + noise and is not classifier output."
       ),
       uiOutput(ns("pages"))
     )
@@ -462,7 +466,21 @@ hrdExpServer <- function(id, sample_data) {
 hrd_exp_demo_app <- function() {
   sample_data <- prepare_hrd_exp_sample_data()
   shinyApp(
-    ui = fluidPage(hrdExpUI("tab3")),
+    ui = fluidPage(
+      tags$style(HTML("
+        html, body {
+          background: #ffffff !important;
+          margin: 0;
+          padding: 0;
+        }
+        .container-fluid {
+          padding-left: 0 !important;
+          padding-right: 0 !important;
+          background: #ffffff !important;
+        }
+      ")),
+      hrdExpUI("tab3")
+    ),
     server = function(input, output, session) {
       hrdExpServer("tab3", sample_data)
     }
