@@ -21,8 +21,8 @@ readme_src <- paste(readLines("README.md", warn = FALSE), collapse = "\n")
 e <- new.env()
 suppressWarnings(suppressMessages(source("app/app.R", local = e)))
 
-stopifnot(grepl("shiny::runApp\\('app'\\)", readme_src), !grepl("shiny::runApp\\(", app_src))
-pass(1, "README keeps the repository launch convention and app/app.R stays deployable")
+stopifnot(grepl("shiny::runApp\\('app'\\)", readme_src), !grepl("shiny::runApp\\(", app_src), !grepl("KIDS26_DEMO_RESULTS", readme_src))
+pass(1, "README keeps the repository launch convention and documents the migrated app flow")
 
 stopifnot(!grepl("/Users/", app_src), !grepl("/Users/", adapter_src))
 pass(2, "app and adapter avoid hard-coded local clone paths")
@@ -48,6 +48,7 @@ pass(5, "the sidebar replaces the methylation page with the HRD Scores page")
 stopifnot(
   identical(e$hrd_scores_defaults, list("x.by" = "HRDsum", "y.by" = "epi_HRD", "color.by" = "cancer_type")),
   identical(names(e$hrd_component_colors), c("HRD_LOH", "LST", "TAI")),
+  grepl('choices = display_data\\$sample_id', app_src),
   grepl('barmode = "stack"', app_src),
   grepl('categoryarray = levels\\(plot_data\\$sample_id\\)', app_src)
 )

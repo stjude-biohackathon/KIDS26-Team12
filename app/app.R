@@ -202,7 +202,7 @@ ui <- dashboardPage(
               selectizeInput(
                 "hrd_selected_samples",
                 "User-selected samples",
-                choices = sample_data$sample_id,
+                choices = display_data$sample_id,
                 selected = NULL,
                 multiple = TRUE,
                 options = list(placeholder = "Select samples to focus the HRD Scores outputs")

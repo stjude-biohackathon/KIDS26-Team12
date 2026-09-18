@@ -17,24 +17,6 @@ adapt_ddr_scores_repo_root <- function(start = getwd()) {
   stop("Could not locate the repository root for DDR score inputs.", call. = FALSE)
 }
 
-empty_ddr_scores <- function(sample_template = NULL) {
-  beta_long <- data.table(
-    probe_id = character(),
-    sample_id = character(),
-    beta_value = numeric(),
-    gene = character()
-  )
-  if (!is.null(sample_template)) {
-    sample_template <- as.data.table(sample_template)[0]
-    if (!"sample_id" %in% names(sample_template)) {
-      sample_template[, sample_id := character()]
-    }
-  } else {
-    sample_template <- data.table(sample_id = character())
-  }
-  merge(beta_long, sample_template, by = "sample_id", all.x = TRUE)
-}
-
 adapt_ddr_scores <- function(beta_path = NULL,
                              probes_path = NULL,
                              samples_path = NULL) {
@@ -67,9 +49,6 @@ adapt_ddr_scores <- function(beta_path = NULL,
   probes <- fread(probes_path, header = FALSE, col.names = c("probe_id", "gene"))
   samples <- fread(samples_path)
 
-  if (!nrow(beta) || !nrow(samples)) {
-    return(empty_ddr_scores(samples))
-  }
 
   beta_long <- melt(
     beta,
