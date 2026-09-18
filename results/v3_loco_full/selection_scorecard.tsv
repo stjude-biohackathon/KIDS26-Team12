@@ -1,0 +1,8 @@
+criterion	description	threshold	candidate_A	candidate_B	pass
+S1	Macro within-tissue Pearson	>= 0.4697	0.5197	0.5036	TRUE
+S2	Tissue R2 of predictions (lineage imprinting)	<= 0.5084 and < A	0.5584	0.4672	TRUE
+S3	Mean absolute tissue bias (C1)	<= 3.4628	3.4628	2.9737	TRUE
+S4	Pooled MAE	<= 9.8689	8.9717	8.4456	TRUE
+S5	Tissues with positive within-tissue r	>= 27 of 30	29 of 30	29 of 30	TRUE
+S6	Breadth: B >= A - 0.05 across tissues	>= 20 of 30	-	25 of 30	TRUE
+S7	30 folds, feature_rank + transform recorded	all TRUE	-	n=TRUE rank=TRUE tt=TRUE	TRUE

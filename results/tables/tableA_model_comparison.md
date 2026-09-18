@@ -1,17 +1,12 @@
-# Table A. Model comparison (STUB -- awaiting candidate selection)
+# Table A - Source-domain model comparison
 
-| Model | Description | Pooled_Pearson | Pooled_Spearman | Macro_within_tissue_Pearson | Macro_within_tissue_Spearman | Macro_MAE | Skill_vs_tissue_mean_null | Tissue_R2_of_prediction | Mean_abs_tissue_offset | Selected |
+Development LOCO, 7,065 samples, 30 non-CNS cancer types. Scored 2026-09-18 14:00 CDT.
+Per-tissue statistics computed under the adopted C2 clipping, then macro-averaged.
+This macro estimator is not interchangeable with the pooled-within estimator (0.612) in docs/24.
+
+| model | feature_strategy | n_features | macro_pearson | macro_spearman | pooled_MAE | mean_abs_tissue_bias | tissue_R2_predicted | tissue_R2_observed | n_tissues_positive_r | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-*(stub -- no rows yet; columns are defined above)*
+| A: run 01 baseline | Pooled total variance (unsupervised) | 5000 | 0.5197 | 0.4747 | 8.9717 | 3.4628 | 0.5584 | 0.3414 | 29 | Incumbent; independently replicated in pipeline_glmnet/ |
+| B: V3-abs | Pooled within-tissue variance (unsupervised) | 5000 | 0.5036 | 0.4472 | 8.4456 | 2.9737 | 0.4672 | 0.3414 | 29 | Selection rule S1-S7: 7 of 7 passed |
 
-
-**STATUS: STUB.** Column headers are frozen; rows are added by the main agent
-after candidate selection completes. No model has been selected at the time this
-file was generated, and no row may be added from a run that saw the held-out
-cancer type or the locked CNS cohort.
-
-Metric definitions match `results/loco_run01/`: `Macro_*` statistics are computed
-inside each held-out cancer type and then averaged unweighted over cancer types;
-`Skill_vs_tissue_mean_null` is 1 - MAE_model / MAE_tissue_mean_null;
-`Tissue_R2_of_prediction` is the one-way ANOVA R2 of cancer type on the clipped
-prediction. All predictions must have the adopted C2 rule `pmax(pred, 0)` applied.
+**Primary candidate: B (V3-abs, within_tissue)** (S1-S7: 7 of 7 passed).
