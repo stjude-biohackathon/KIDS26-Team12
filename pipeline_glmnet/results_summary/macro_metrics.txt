@@ -1,0 +1,10 @@
+macro_MAE 8.67910448629864
+macro_null_MAE 13.1612729807866
+pooled_MAE 9.2441761847256
+pooled_spearman 0.73811169268051
+median_within_cancer_spearman_n20 0.475909398801742
+pooled_AUC_HRDsum_ge42 0.840606358663583
+control none
+inner_folds cancer
+transform beta
+folds_completed 30 of 30
