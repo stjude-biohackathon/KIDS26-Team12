@@ -51,6 +51,8 @@ Rscript -e "shiny::runApp('app')"
 
 The demo defaults to prominently labeled synthetic fixtures. To use approved outputs, set `KIDS26_DEMO_RESULTS` to a precomputed TSV with the documented schema, including a provenance column. No PBTP upload or publication is automated.
 
+The Shiny app now replaces the old methylation page with an **HRD Scores** page that loads `front_end_data/ddr_scars/` through `R/adapters/adapt_ddr_scores.R`. App prerequisites are installed by `Rscript scripts/setup.R`, including `VizModules`, `plotly`, `DT`, and `shinydashboard`.
+
 ## What exists now
 
 - Repository/literature inventory and 70-row evidence matrix: 35 previously reviewed local PDFs, 25 newly reconciled PDFs (including one extra paper), 60 local PDFs total, and 10 unavailable entries with explicit gaps.

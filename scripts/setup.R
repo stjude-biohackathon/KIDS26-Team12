@@ -18,7 +18,8 @@ renv::init(bare=TRUE)
 #
 # jsonlite is used in app/app.R via jsonlite:: and is guarded there by an
 # explicit requireNamespace() check rather than being assumed present.
-renv::install(c("glmnet","data.table","jsonlite","shiny","matrixStats","digest"))
+# The interactive demo also loads shinydashboard, plotly, DT and VizModules.
+renv::install(c("glmnet","data.table","jsonlite","shiny","matrixStats","digest","shinydashboard","plotly","DT","VizModules"))
 
 # Add Bioconductor methylation callers only for the intensity branch, with reviewed versions.
 # After the R test suites pass:
@@ -26,5 +27,6 @@ renv::install(c("glmnet","data.table","jsonlite","shiny","matrixStats","digest")
 #   Rscript tests/test_provenance_gate.R
 #   Rscript tests/test_calibration.R
 #   Rscript tests/test_c1_rank_model.R
+#   Rscript tests/test_app_hrd_scores.R
 # then: renv::snapshot(prompt=FALSE)
 writeLines(capture.output(sessionInfo()),"renv_setup_session.txt")
