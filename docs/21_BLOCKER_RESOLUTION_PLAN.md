@@ -41,6 +41,8 @@ transfer* remain plans, not findings. The lock is still closed.
 | **B4** → reverted in part | the `select=` allowlist subset in `4ec3493` is wrong-axis and redundant; `rm(beta); gc()` kept |
 | **B10** → **PARTLY RESOLVED** | `06cd86c` allowlist/titles reworked — 4 defects fixed; label now derives from the stamped provenance class |
 | **B13–B16 added** | process gaps exposed by the integration: no load-path test, no app-governance test, `renv.lock` drift, sentinel representativeness |
+| **B13, B14** → **RESOLVED** | `tests/test_load_path.R` (7/7) and `tests/test_app_governance.R` (10/10) |
+| **B15** → partly resolved | `matrixStats`/`digest` added to `setup.R`; `renv.lock` snapshot still owed |
 | **C1b** → strengthened | EB shrinkage **inverts the k=3 verdict**: harmful → +40% of oracle gain |
 | **C1c** → not supported by the cheap screen | percentile remap adds zero ranking information and *increases* tissue R² |
 | C1 sentinel | array `323195423`, four folds, `priority` queue, gates pre-registered |
@@ -484,7 +486,7 @@ These were found while integrating the teammate branch and running the C1
 sentinel folds. They are recorded here rather than fixed silently, because each
 one is a *process* gap that will otherwise recur.
 
-### B13. No test exercises the matrix load path — **OPEN, P1**
+### B13. No test exercises the matrix load path — **RESOLVED 2026-09-17**
 
 **Symptom.** The `select=` defect in B4 shipped, was merged, and survived review.
 Nothing in the test suite would have caught it: `tests/smoke_model.R` tests
@@ -505,11 +507,31 @@ and looks like data.
 3. Assert the load **errors** — not warns — if requested probes are absent.
 4. Run it in CI alongside `tests/smoke_model.R`.
 
-**Done when.** A deliberately mis-oriented load fails the suite.
+> **Done — `tests/test_load_path.R`, 7/7 passing.**
+>
+> Case 4 is the regression guard and it reproduces the exact B4 failure on a
+> same-orientation fixture. One correction to the original diagnosis is worth
+> recording, because it makes the bug *worse* than first described: the
+> degenerate transpose is **0 × n_probes**, i.e. **zero samples with the probe
+> count intact** — not a zero-probe matrix. A downstream check that only
+> validated `ncol(x)` against the expected probe count would therefore have
+> passed while holding no data at all.
+>
+> Item 3 was adjusted. The load path does not itself error on absent probes and
+> should not be made to, because `apply_preprocess()` aligns by feature name and
+> tolerating unseen probes is required for cross-platform transfer (B7 records
+> the same reasoning). Case 6 instead asserts that absent probes are
+> **detectable by set difference** rather than silently dropped, and case 5
+> shows the correct row-wise subsetting idiom so the guard is not misread as
+> "probe subsetting is impossible".
+>
+> Case 7 adds a source-level check that no production beta load reintroduces
+> `fread(select=)`, covering `train_baseline.R`, `loco_one_fold.R` and
+> `c1_rank_one_fold.R`. That is what makes this durable against a future merge.
 
 ---
 
-### B14. Shiny governance checks are untested — **OPEN, P2**
+### B14. Shiny governance checks are untested — **RESOLVED 2026-09-17**
 
 **Symptom.** The B10 allowlist/provenance gates were verified interactively (see
 the table under B10) but that verification lives in this document, not in a test
@@ -519,12 +541,29 @@ file. It will rot.
 `tests/test_provenance_gate.R`, asserting each row of that table executably,
 including the negative controls. Bundle with B13 into one CI entry point.
 
-**Done when.** `Rscript tests/test_app_governance.R` passes and fails for the
-right reasons.
+> **Done — `tests/test_app_governance.R`, 10/10 passing.**
+>
+> Every REJECT case is paired with an ACCEPT case differing in exactly one
+> property, so the suite cannot degenerate into the B5 failure of a gate that
+> can only ever fire one way. Cases 6 and 7 are load-bearing: a table stamped
+> `NOT A SCIENTIFIC RESULT;OVERRIDDEN_BY_ALLOW_FIXTURE` (precisely what
+> `predict_frozen.R` writes under `--allow-fixture`) is refused rather than
+> rendered under an approved heading, which is what actually closes the
+> laundering path B7 identified from the inference side.
+>
+> Cases 4, 5 and 10 are regression guards tied to specific defects in commit
+> `06cd86c`: the documented README path must stay in the allowlist, an
+> equivalent path spelling must still resolve, and the displayed label must
+> derive from the stamped provenance class rather than from
+> `nzchar(Sys.getenv(...))`.
+>
+> Accepts are checked by **which table loaded**, not merely by the absence of an
+> error, so a silent fallback to the synthetic fixture cannot masquerade as a
+> pass.
 
 ---
 
-### B15. `renv.lock` does not cover the packages now in use — **OPEN, P1**
+### B15. `renv.lock` does not cover the packages now in use — **PARTLY RESOLVED 2026-09-17**
 
 **Symptom.** `scripts/setup.R` installs `glmnet`, `data.table`, `jsonlite`,
 `shiny`. Code on `main` now also uses **`matrixStats`** (B3's speedup, load-
@@ -542,6 +581,22 @@ an environment where the array silently falls back or the app fails at runtime.
    commit the updated `renv.lock`.
 3. Add an explicit `requireNamespace()` guard wherever a package is used but not
    attached (done for `jsonlite` in `app/app.R`; audit the rest).
+
+> **Items 1 and 3 done.** `scripts/setup.R` now installs `matrixStats` and
+> `digest`, with a comment recording why each is load-bearing and how its
+> absence fails — `matrixStats` errors outright, while a missing `digest`
+> degrades a security check to a warning, which is the quieter and more
+> dangerous of the two. `app/app.R` guards `jsonlite` with `requireNamespace()`.
+> The setup script's closing comment now lists all four R suites, not just
+> `smoke_model.R`.
+>
+> **Item 2 is NOT done and this blocker stays open because of it.** Running
+> `renv::snapshot()` would rewrite `renv.lock` from whatever is installed on the
+> current interactive node, which is not verified to be the environment the
+> cluster jobs used. Snapshotting from an unvalidated session would replace a
+> known-incomplete lockfile with a confidently-wrong one. The snapshot should be
+> taken on the analysis host after a clean `renv::restore()` and a full suite
+> run.
 
 **Done when.** A clean `renv::restore()` followed by the full test suite passes
 on a machine that has never run this project.
