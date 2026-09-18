@@ -67,6 +67,74 @@
 
 
 # -----------------------------------------------------------------------------
+# within_tissue_var(): pooled WITHIN-TISSUE variance per probe, blocked.
+# -----------------------------------------------------------------------------
+# MOVED HERE FROM R/rank_model.R so that BOTH the tissue-relative model (Phase C)
+# and the ABSOLUTE-target model (V3-abs) can share one tested implementation.
+# R/rank_model.R sources this file, so its callers are unchanged.
+#
+# Training rows only - the caller subsets before calling. Non-finite cells are
+# filled with the supplied per-probe medians (the same training medians the
+# preprocessing uses), so this never invents values and never looks at y.
+#
+# Identity used: within_SS = sum_t (Q_t - S_t^2 / n_t), and
+# var_within = within_SS / (N - T), where S_t = colSums(x_t) and
+# Q_t = colSums(x_t^2). Columns are processed in blocks so peak memory is
+# O(N * block_size), independent of the total probe count. No residualised copy
+# of the matrix is ever created.
+within_tissue_var <- function(x, cancer, med = NULL, block_size = 20000L) {
+  stopifnot(is.matrix(x), !is.null(colnames(x)), nrow(x) == length(cancer))
+  cancer <- as.character(cancer)
+  groups <- sort(unique(cancer))
+  idx <- lapply(groups, function(g) which(cancer == g))
+  nt <- vapply(idx, length, integer(1))
+  N <- nrow(x); Tn <- length(groups)
+  if (N - Tn < 1L) stop("Need more training rows than tissues for within-tissue variance")
+
+  p <- ncol(x)
+  out <- numeric(p); names(out) <- colnames(x)
+  starts <- seq.int(1L, p, by = block_size)
+
+  for (st in starts) {
+    cols <- st:min(st + block_size - 1L, p)
+    xb <- x[, cols, drop = FALSE]
+    storage.mode(xb) <- "double"
+    nf <- !is.finite(xb)
+    if (any(nf)) {
+      if (is.null(med)) stop("within_tissue_var(): non-finite values need `med`")
+      mb <- med[colnames(xb)]
+      if (any(!is.finite(mb))) stop("within_tissue_var(): non-finite median supplied")
+      # Fill by column, touching only the affected columns.
+      for (j in which(matrixStatsOrBase_colAnys(nf))) xb[nf[, j], j] <- mb[j]
+    }
+    ss <- numeric(length(cols))
+    for (k in seq_along(idx)) {
+      i <- idx[[k]]
+      if (!length(i)) next
+      xt <- xb[i, , drop = FALSE]
+      S <- colSums(xt)
+      Q <- colSums(xt * xt)
+      ss <- ss + (Q - (S * S) / nt[k])
+      rm(xt, S, Q)
+    }
+    out[cols] <- ss / (N - Tn)
+    rm(xb, nf, ss)
+  }
+  # Numerical guard: the identity can return tiny negatives for constant columns.
+  out[out < 0 & out > -1e-8] <- 0
+  out
+}
+
+# Tiny helper so within_tissue_var() can use the compiled reduction when
+# matrixStats is available, exactly as fit_preprocess() does, without depending
+# on it.
+matrixStatsOrBase_colAnys <- function(m) {
+  if (requireNamespace("matrixStats", quietly = TRUE)) matrixStats::colAnys(m)
+  else apply(m, 2, any)
+}
+
+
+# -----------------------------------------------------------------------------
 # fit_preprocess(): LEARN the preprocessing transform from training rows only.
 # -----------------------------------------------------------------------------
 # Input : x            numeric matrix, samples in ROWS, probes in COLUMNS,
@@ -74,13 +142,30 @@
 #         max_features how many probes to keep after variance ranking.
 #         max_missing  a probe is dropped if more than this fraction of training
 #                      samples have a non-finite value for it.
+#         feature_rank which unsupervised statistic ranks probes:
+#                        "pooled"        - total variance across all training
+#                                          rows. THE DEFAULT and the pre-V3
+#                                          behaviour, bit-for-bit.
+#                        "within_tissue" - pooled within-tissue variance, i.e.
+#                                          variance after removing each tissue's
+#                                          own mean. Requires `cancer`.
+#         cancer       tissue label per ROW of x. Required only when
+#                      feature_rank="within_tissue"; ignored otherwise.
+#         block_size   column block width for the within-tissue sweep.
 #
 # Output: a list describing the transform. It contains NO sample data - only
 #         per-probe summary statistics - so it is safe to save and ship.
 #
 # This function must only ever be handed TRAINING rows. Every caller below
 # subsets x before calling it.
-fit_preprocess <- function(x, max_features=5000L, max_missing=0.05) {
+fit_preprocess <- function(x, max_features=5000L, max_missing=0.05,
+                           feature_rank=c("pooled","within_tissue"),
+                           cancer=NULL, block_size=20000L) {
+  feature_rank <- match.arg(feature_rank)
+  if (feature_rank == "within_tissue") {
+    if (is.null(cancer)) stop("feature_rank='within_tissue' requires `cancer`")
+    stopifnot(length(cancer) == nrow(x))
+  }
   # Guard the shape contract up front. Duplicate probe names would make the
   # name-based column reconstruction in apply_preprocess() ambiguous, so reject
   # them here rather than producing a silently mis-aligned matrix later.
@@ -176,7 +261,21 @@ fit_preprocess <- function(x, max_features=5000L, max_missing=0.05) {
   #
   # Probes with zero variance are dropped: they carry no information, and
   # dividing by their (zero) standard deviation later would produce NaN.
-  v <- if (has_ms) matrixStats::colVars(z) else apply(z,2,var)
+  #
+  # V3-abs: when feature_rank="within_tissue" the ranking statistic is the
+  # POOLED WITHIN-TISSUE variance instead of the total variance. Everything else
+  # - the missingness filter, the medians, the centre/scale, the tie-break - is
+  # untouched. z here is the TRAINING block only (the caller subset x), already
+  # imputed with TRAINING medians, so this statistic is training-fold-only by
+  # construction. A probe that is constant across the training block has zero
+  # within-tissue variance too, so the `v > 0` filter still removes it; a probe
+  # that varies only BETWEEN tissues also falls out here, which is the whole
+  # point of the V3-abs change.
+  if (feature_rank == "within_tissue") {
+    v <- within_tissue_var(z, cancer, med=med, block_size=block_size)
+  } else {
+    v <- if (has_ms) matrixStats::colVars(z) else apply(z,2,var)
+  }
   names(v) <- colnames(z); ii <- which(is.finite(v) & v>0)
 
   # Sort by decreasing variance, breaking ties on probe NAME. The tie-break
@@ -210,7 +309,7 @@ fit_preprocess <- function(x, max_features=5000L, max_missing=0.05) {
   # This object contains ONLY per-probe summary statistics - no sample-level
   # data - which is what makes it safe to save, share and ship inside a model.
   list(features=colnames(z), median=med[colnames(z)],center=mu,scale=s,
-       max_missing=max_missing)
+       max_missing=max_missing, feature_rank=feature_rank)
 }
 
 
@@ -372,7 +471,9 @@ check_lambda_boundary <- function(selected_lambda,path,alpha,label="") {
 #
 # Everything passed in here is training data for the current outer fold. The
 # outer held-out cancer is never visible to this function.
-fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L) {
+fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L,
+                   feature_rank=c("pooled","within_tissue"),block_size=20000L) {
+  feature_rank <- match.arg(feature_rank)
   if (!requireNamespace("glmnet",quietly=TRUE)) stop("Install glmnet via scripts/setup.R")
   stopifnot(length(y)==nrow(x),all(is.finite(y)),length(patient)==length(y))
   # A constant target makes R2 undefined and the fit meaningless.
@@ -409,7 +510,11 @@ fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L) {
   # the file (~73 s at full width), so computing it once and using it for both
   # the lambda path and the final refit costs nothing extra - the original code
   # already paid for one call here.
-  pp <- fit_preprocess(x,max_features)
+  # V3-abs: `cancer` here is the OUTER-TRAINING tissue vector. The held-out
+  # cancer is absent from x and from cancer by construction (the caller subsets
+  # both with the same mask), so the within-tissue ranking cannot see it.
+  pp <- fit_preprocess(x,max_features,feature_rank=feature_rank,cancer=cancer,
+                       block_size=block_size)
   z  <- apply_preprocess(x,pp,FALSE)
   lam_by_alpha <- lapply(alphas, function(a) lambda_path(z,y,a))
   names(lam_by_alpha) <- as.character(alphas)
@@ -430,7 +535,12 @@ fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L) {
     # passed to fit_en, which are all training rows for this outer fold, and is
     # used only for the lambda path and the Phase 2 refit - never to evaluate an
     # inner validation fold.)
-    pp_in <- fit_preprocess(x[tr,,drop=FALSE],max_features)
+    # V3-abs: the ranking statistic is recomputed here too, from x[tr,] and
+    # cancer[tr] only. There is no hoisted or global ranking - each inner fold
+    # ranks on its own rows, exactly as it re-learns medians and centre/scale.
+    pp_in <- fit_preprocess(x[tr,,drop=FALSE],max_features,
+                            feature_rank=feature_rank,cancer=cancer[tr],
+                            block_size=block_size)
     ztr <- apply_preprocess(x[tr,,drop=FALSE],pp_in,FALSE)
     zva <- apply_preprocess(x[va,,drop=FALSE],pp_in,FALSE)
 
@@ -499,7 +609,8 @@ fit_en <- function(x,y,patient,cancer,max_features=5000L,seed=260910L) {
        lambda_at_boundary=if(is.null(boundary)) NA else (boundary$at_top||boundary$at_bottom),
        lambda_boundary_side=if(is.null(boundary)) NA_character_
                             else if(boundary$at_top) "top" else if(boundary$at_bottom) "bottom" else "interior",
-       ood_cut=ood_cut,seed=seed,training_n=length(y),training_mean=mean(y),target="reference_HRDsum")
+       ood_cut=ood_cut,seed=seed,training_n=length(y),training_mean=mean(y),
+       feature_rank=feature_rank,target="reference_HRDsum")
 }
 
 

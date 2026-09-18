@@ -1,0 +1,119 @@
+#!/bin/bash
+#BSUB -J "kids26_v3[3,10,26,28]"
+#BSUB -q priority
+#BSUB -n 4
+#BSUB -R "span[hosts=1] rusage[mem=60GB]"
+#BSUB -M 240GB
+#BSUB -W 8:00
+#BSUB -o logs/v3_%J_%I.out
+#BSUB -e logs/v3_%J_%I.err
+# =============================================================================
+# KIDS26 Team 12 - V3-abs SENTINEL folds for the ABSOLUTE-target LOCO model.
+# =============================================================================
+#
+# WHAT THIS RUNS
+#   FOUR outer folds only, not all thirty. Each task holds out one cancer type,
+#   fits the ABSOLUTE reference-HRDsum elastic net from R/model.R on the other
+#   29, and scores the held-out type. Tasks are independent.
+#
+# WHAT V3-abs IS
+#   The existing absolute-target LOCO model with EXACTLY ONE change: the
+#   5,000-probe unsupervised feature filter ranks probes by POOLED WITHIN-TISSUE
+#   variance (computed on the training fold only) instead of pooled TOTAL
+#   variance. Concretely, that is
+#       Rscript scripts/loco_one_fold.R ... identity within_tissue
+#   which sets fit_en(feature_rank="within_tissue").
+#
+#   Nothing else moves: same missingness filter, same training medians, same
+#   centre/scale, same nested inner CV, same alpha/lambda grid, same identity
+#   target transform. So any difference against run 01 is attributable to the
+#   ranking statistic and to nothing else.
+#
+#   The motivation is that total variance is dominated by probes that separate
+#   TISSUES from one another. Those probes are useless for a leave-one-cancer-out
+#   model asked to generalise to a tissue it has never seen. Ranking by variance
+#   AFTER removing each tissue's own mean promotes probes that vary WITHIN a
+#   tissue, which is the axis the model actually has to extrapolate along.
+#
+# WHY ONLY FOUR
+#   Same sentinel-then-gate protocol the C1 rank sentinel follows: a full 30-fold
+#   array is only justified if these four clear the gates first. Running 30 folds
+#   before knowing whether the change helps repeats the C2/log1p mistake, where a
+#   four-fold preview built from two unrepresentative tissues pointed the
+#   opposite way from the full run.
+#
+#   The indices below are POSITIONS IN sort(unique(cancer_type[!cns])), the same
+#   ordering loco_one_fold.R and c1_rank_one_fold.R use, and the SAME FOUR the
+#   rank sentinel used so the two variants are directly comparable:
+#        3 = BRCA   largest tissue, run 01 within-tissue r = 0.632. If the
+#                   within-tissue ranking destroys BRCA, the idea is dead.
+#       10 = KICH   small (n=65) but the STRONGEST within-tissue r in run 01
+#                   (0.803). Tests whether the signal survives in a small cohort.
+#       26 = THCA   NEGATIVE CONTROL. Run 01 r = -0.032: its within-tissue target
+#                   is near-constant, so within-tissue evaluation there is close
+#                   to meaningless. THCA scoring well is NOT evidence of success
+#                   and must not be reported as such.
+#       28 = UCEC   large, high within-tissue r (0.758) AND the largest positive
+#                   tissue offset (+6.49). Separates ranking from calibration.
+#
+# GBM/LGG
+#   Still a locked partition. loco_one_fold.R drops them from BOTH the train and
+#   the test mask before anything is fitted, so they enter neither the model nor
+#   the within-tissue variance statistic.
+#
+# QUEUE CHOICE - priority, NOT biohackathon
+#   biohackathon has exactly two usable nodes and 80 priority. priority maps to
+#   the rhel8_rome host group: 46 nodes at 1,003 GB and 14 at 1.9 TB. A 240 GB
+#   task places easily there and leaves biohackathon free for teammates.
+#
+#   *** rusage[mem] ON THIS CLUSTER IS PER SLOT, NOT PER JOB. ***
+#   60 GB x 4 slots = 240 GB reserved, matching -M. The measured peak for the
+#   equivalent absolute-model fold was 173 GB (job 323075937), and the blocked
+#   within-tissue sweep adds only a bounded ~2.5 GB of temporaries (see the
+#   COMPUTATIONAL NOTE in R/rank_model.R), so this is still ~38% headroom. Do not
+#   raise -n without lowering rusage[mem] to match.
+#
+#   No %N throttle: all four tasks are meant to run concurrently.
+#
+# SUBMIT
+#   bsub < scripts/lsf_v3_sentinel.bsub
+#
+# MONITOR
+#   bjobs -A
+#   tail -f logs/v3_<JOBID>_3.out
+#
+# AFTER ALL FOUR COMPLETE
+#   Compare per-fold metrics_<type>.tsv (which now carries a feature_rank column
+#   naming the variant) against the matching run 01 folds BEFORE launching any
+#   full array.
+# =============================================================================
+
+set -euo pipefail
+
+REPO=/research/groups/shelagrp/home/esavage/KIDS26/KIDS26-Team12
+BETA=data/processed/beta.tsv
+META=data/processed/master_samples.tsv
+OUT=results/v3_sentinel
+
+cd "$REPO"
+mkdir -p logs "$OUT/folds"
+
+echo "=== v3-abs sentinel job ${LSB_JOBID} task ${LSB_JOBINDEX} on $(hostname) ==="
+echo "started: $(date)"
+free -g | head -2
+echo
+
+# Pin thread counts to the slots LSF granted, so R's BLAS does not spawn one
+# thread per physical core (up to 128 on some rome nodes) and oversubscribe.
+export OMP_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export OPENBLAS_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export MKL_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+
+# LSB_JOBINDEX is the 1-based fold index into the sorted development types.
+# identity     = no target transform (run 01 behaviour).
+# within_tissue = THE ONE CHANGE that defines V3-abs.
+Rscript scripts/loco_one_fold.R "$BETA" "$META" "$OUT" "${LSB_JOBINDEX}" \
+        identity within_tissue
+
+echo
+echo "finished: $(date)"

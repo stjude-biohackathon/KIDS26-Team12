@@ -19,7 +19,7 @@
 #   drift away from the serial one.
 #
 # USAGE
-#   Rscript scripts/loco_one_fold.R <beta.tsv> <master.tsv> <out_dir> <fold_index> [transform]
+#   Rscript scripts/loco_one_fold.R <beta.tsv> <master.tsv> <out_dir> <fold_index> [transform] [feature_rank]
 #
 #   fold_index is 1-based and indexes into the sorted vector of development
 #   cancer types, which is exactly the order train_baseline.R iterates in. LSF
@@ -30,6 +30,14 @@
 #   and R/calibration.R for why this is a real trade-off and not a free win.
 #   "clip" is NOT offered here because clipping is a post-hoc transform of the
 #   predictions and needs no refit; the merge step applies it.
+#
+#   feature_rank is optional and defaults to "pooled" (the run 01 behaviour:
+#   the 5,000-probe unsupervised filter ranks probes by TOTAL variance across
+#   the training fold). Set "within_tissue" for V3-abs, which ranks the same
+#   5,000 probes by POOLED WITHIN-TISSUE variance instead, so probes that only
+#   separate tissues from one another cannot win a slot. Everything else about
+#   the fold - missingness filter, medians, centre/scale, tuning grid, target -
+#   is unchanged. Whichever is used is recorded in metrics_<TYPE>.tsv.
 #
 # OUTPUT
 #   One .rds bundle and two .tsv files per fold, written into <out_dir>/folds/.
@@ -42,13 +50,17 @@
 # =============================================================================
 
 args <- commandArgs(trailingOnly=TRUE)
-if (length(args) < 4 || length(args) > 5) {
-  stop("Usage: Rscript scripts/loco_one_fold.R <beta.tsv> <master.tsv> <out_dir> <fold_index> [transform]")
+if (length(args) < 4 || length(args) > 6) {
+  stop("Usage: Rscript scripts/loco_one_fold.R <beta.tsv> <master.tsv> <out_dir> <fold_index> [transform] [feature_rank]")
 }
 beta_path <- args[1]; meta_path <- args[2]; out_dir <- args[3]
 fold_index <- as.integer(args[4])
-transform_name <- if (length(args) == 5) args[5] else "identity"
+transform_name <- if (length(args) >= 5) args[5] else "identity"
+feature_rank <- if (length(args) >= 6) args[6] else "pooled"
 if (is.na(fold_index) || fold_index < 1L) stop("fold_index must be a positive integer")
+if (!feature_rank %in% c("pooled", "within_tissue")) {
+  stop("feature_rank must be 'pooled' or 'within_tissue'")
+}
 
 fold_dir <- file.path(out_dir, "folds")
 dir.create(fold_dir, recursive=TRUE, showWarnings=FALSE)
@@ -56,6 +68,7 @@ dir.create(fold_dir, recursive=TRUE, showWarnings=FALSE)
 cat("host       :", Sys.info()[["nodename"]], "\n")
 cat("fold index :", fold_index, "\n")
 cat("transform  :", transform_name, "\n")
+cat("feature_rank:", feature_rank, "\n")
 cat("started    :", format(Sys.time()), "\n\n")
 
 source("R/model.R")
@@ -103,7 +116,12 @@ cat(sprintf("train n=%d  test n=%d\n\n", sum(tr), sum(te)))
 t0 <- Sys.time()
 # C2: fit on the TRANSFORMED target. tf$forward is identity by default, so this
 # reproduces run 01 exactly unless a transform was requested.
-b <- fit_en(x[tr,,drop=FALSE], tf$forward(meta$HRDsum[tr]), meta$patient_id[tr], meta$cancer_type[tr])
+# feature_rank is threaded straight through: fit_en() re-ranks inside EVERY
+# inner fold and again for the outer-training refit, always on that partition's
+# own rows. meta$cancer_type[tr] carries the same `tr` mask as the matrix, so the
+# held-out type is absent from the ranking statistic by construction.
+b <- fit_en(x[tr,,drop=FALSE], tf$forward(meta$HRDsum[tr]), meta$patient_id[tr], meta$cancer_type[tr],
+            feature_rank = feature_rank)
 b$target_transform <- transform_name
 cat(sprintf("fit_en completed in %.1f min\n", as.numeric(difftime(Sys.time(), t0, units="mins"))))
 cat(sprintf("  selected alpha=%.2g lambda=%.5g  (boundary: %s)\n",
@@ -125,6 +143,9 @@ mm <- metrics(p$actual, p$predicted_reference_HRDsum)
 mm$cancer_type <- type
 mm$train_n <- sum(tr)
 mm$target_transform <- transform_name
+# Provenance: every metrics row states which probe-ranking strategy produced it,
+# so a pooled run and a V3-abs run are never confusable after the fact.
+mm$feature_rank <- feature_rank
 mm$selected_features <- length(b$preprocess$features)
 mm$alpha <- b$alpha
 mm$lambda <- b$lambda

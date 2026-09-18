@@ -191,66 +191,14 @@ tissue_weights <- function(cancer, weight_mode = c("sample", "tissue")) {
 
 
 # -----------------------------------------------------------------------------
-# within_tissue_var(): pooled within-tissue variance per probe, blocked.
+# within_tissue_var(): MOVED TO R/model.R
 # -----------------------------------------------------------------------------
-# Training rows only - the caller subsets before calling. Non-finite cells are
-# filled with the supplied per-probe medians (the same training medians the
-# preprocessing uses), so this never invents values and never looks at y.
-#
-# Identity used (see file header): within_SS = sum_t (Q_t - S_t^2 / n_t), and
-# var_within = within_SS / (N - T). Columns are processed in blocks so peak
-# memory is O(N * block_size), independent of the total probe count. No
-# residualised copy of the matrix is ever created.
-within_tissue_var <- function(x, cancer, med = NULL, block_size = 20000L) {
-  stopifnot(is.matrix(x), !is.null(colnames(x)), nrow(x) == length(cancer))
-  cancer <- as.character(cancer)
-  groups <- sort(unique(cancer))
-  idx <- lapply(groups, function(g) which(cancer == g))
-  nt <- vapply(idx, length, integer(1))
-  N <- nrow(x); Tn <- length(groups)
-  if (N - Tn < 1L) stop("Need more training rows than tissues for within-tissue variance")
-
-  p <- ncol(x)
-  out <- numeric(p); names(out) <- colnames(x)
-  starts <- seq.int(1L, p, by = block_size)
-
-  for (st in starts) {
-    cols <- st:min(st + block_size - 1L, p)
-    xb <- x[, cols, drop = FALSE]
-    storage.mode(xb) <- "double"
-    nf <- !is.finite(xb)
-    if (any(nf)) {
-      if (is.null(med)) stop("within_tissue_var(): non-finite values need `med`")
-      mb <- med[colnames(xb)]
-      if (any(!is.finite(mb))) stop("within_tissue_var(): non-finite median supplied")
-      # Fill by column, touching only the affected columns.
-      for (j in which(matrixStatsOrBase_colAnys(nf))) xb[nf[, j], j] <- mb[j]
-    }
-    ss <- numeric(length(cols))
-    for (k in seq_along(idx)) {
-      i <- idx[[k]]
-      if (!length(i)) next
-      xt <- xb[i, , drop = FALSE]
-      S <- colSums(xt)
-      Q <- colSums(xt * xt)
-      ss <- ss + (Q - (S * S) / nt[k])
-      rm(xt, S, Q)
-    }
-    out[cols] <- ss / (N - Tn)
-    rm(xb, nf, ss)
-  }
-  # Numerical guard: the identity can return tiny negatives for constant columns.
-  out[out < 0 & out > -1e-8] <- 0
-  out
-}
-
-# Tiny helper so within_tissue_var() can use the compiled reduction when
-# matrixStats is available, exactly as fit_preprocess() does, without depending
-# on it.
-matrixStatsOrBase_colAnys <- function(m) {
-  if (requireNamespace("matrixStats", quietly = TRUE)) matrixStats::colAnys(m)
-  else apply(m, 2, any)
-}
+# The blocked pooled-within-tissue variance sweep now lives in R/model.R so that
+# the ABSOLUTE-target model (V3-abs, fit_en(feature_rank="within_tissue")) and
+# this tissue-relative library share ONE tested implementation. R/model.R is
+# sourced at the top of this file, so within_tissue_var() and its
+# matrixStatsOrBase_colAnys() helper are already in scope here and every caller
+# below is unchanged. Do not re-add a copy.
 
 
 # -----------------------------------------------------------------------------
@@ -261,32 +209,23 @@ matrixStatsOrBase_colAnys <- function(m) {
 # feature_rank "within_tissue" : same missingness filter, same training medians,
 #                                same centre/scale, but probes are ranked by
 #                                POOLED WITHIN-TISSUE variance (training rows
-#                                only). Implemented by asking fit_preprocess()
-#                                for ALL surviving probes, then re-ranking with
-#                                within_tissue_var() and subsetting the returned
-#                                transform. Nothing is recomputed on held-out
-#                                rows and the returned object has the identical
-#                                shape, so apply_preprocess() works unchanged.
+#                                only).
+#
+# BOTH branches are now a THIN DELEGATION to fit_preprocess() in R/model.R,
+# which grew a `feature_rank` argument for V3-abs. The ranking arithmetic used
+# to be duplicated here; it is not any more, so the absolute and relative models
+# provably select features the same way. The returned object has the identical
+# shape it always had (plus the recorded $feature_rank), so apply_preprocess()
+# works unchanged.
 # Ties on variance break on probe NAME, so selection is deterministic.
 fit_preprocess_ranked <- function(x, cancer, max_features = 5000L,
                                   max_missing = 0.05,
                                   feature_rank = c("pooled", "within_tissue"),
                                   block_size = 20000L) {
   feature_rank <- match.arg(feature_rank)
-  if (feature_rank == "pooled") return(fit_preprocess(x, max_features, max_missing))
-
-  # Keep every probe that survives missingness + non-constancy, then re-rank.
-  pp_all <- fit_preprocess(x, max_features = ncol(x), max_missing = max_missing)
-  v <- within_tissue_var(x[, pp_all$features, drop = FALSE], cancer,
-                         med = pp_all$median, block_size = block_size)
-  ii <- which(is.finite(v) & v > 0)
-  if (length(ii) < 2L) stop("Fewer than two probes with non-zero within-tissue variance")
-  ii <- ii[order(-v[ii], names(v)[ii])]
-  ii <- head(ii, max_features)
-  feats <- names(v)[ii]
-  list(features = feats, median = pp_all$median[feats],
-       center = pp_all$center[feats], scale = pp_all$scale[feats],
-       max_missing = max_missing)
+  fit_preprocess(x, max_features = max_features, max_missing = max_missing,
+                 feature_rank = feature_rank, cancer = cancer,
+                 block_size = block_size)
 }
 
 
