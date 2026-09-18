@@ -55,6 +55,7 @@ prepare_hrd_scores_data <- function(ddr_data,
   if (keep_n < nrow(sample_data)) {
     set.seed(as.integer(subset_seed))
     sample_data <- sample_data[sample.int(nrow(sample_data), keep_n)]
+    setorder(sample_data, sample_id)
   }
 
   sample_data[]

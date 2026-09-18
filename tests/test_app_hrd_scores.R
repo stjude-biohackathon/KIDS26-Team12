@@ -82,4 +82,16 @@ stopifnot(
 )
 pass(6, "adapter reshapes and joins a minimal DDR scores input set")
 
-cat("\nALL 6 HRD SCORES APP TESTS PASSED\n")
+
+writeLines(c("probe_id\tS1"), beta_path)
+writeLines(c("cg1\tBRCA1"), probes_path)
+writeLines(c("sample_id\tcancer_type\tHRDsum\tHRD_LOH\tLST\tTAI\tpurity\tploidy"), samples_path)
+
+empty_adapted <- adapt_ddr_scores(beta_path = beta_path, probes_path = probes_path, samples_path = samples_path)
+stopifnot(
+  nrow(empty_adapted) == 0,
+  all(c("sample_id", "probe_id", "beta_value", "gene", "cancer_type", "HRDsum") %in% names(empty_adapted))
+)
+pass(7, "adapter keeps a stable empty schema when DDR inputs have headers but no rows")
+
+cat("\nALL 7 HRD SCORES APP TESTS PASSED\n")

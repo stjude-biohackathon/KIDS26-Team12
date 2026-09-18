@@ -22,20 +22,19 @@ app_repo_root <- function(start = getwd()) {
   stop("Could not locate the repository root for the Shiny app.", call. = FALSE)
 }
 
+load_or_empty <- function(loader, fallback) {
+  tryCatch(
+    list(data = loader(), error = NULL),
+    error = function(err) list(data = fallback(), error = conditionMessage(err))
+  )
+}
+
 repo_root <- app_repo_root()
 source(file.path(repo_root, "R", "app_hrd_scores_helpers.R"), local = TRUE)
 source(file.path(repo_root, "R", "adapters", "adapt_ddr_scores.R"), local = TRUE)
 
 required_cols <- c("sample_id", "cancer_type", "HRDsum", "HRD_LOH", "LST", "TAI", "purity", "ploidy")
 empty_base_sample_data <- empty_hrd_scores_data()[, .(sample_id, cancer_type, HRDsum, HRD_LOH, LST, TAI, purity, ploidy)]
-
-load_ddr_scores <- function() {
-  tryCatch(adapt_ddr_scores(), error = function(err) {
-    empty <- data.table()
-    attr(empty, "load_error") <- conditionMessage(err)
-    empty
-  })
-}
 
 base_sample_data <- function(ddr_data) {
   if (is.null(ddr_data) || !nrow(ddr_data)) {
@@ -64,16 +63,22 @@ no_data_ui <- function(title, detail) {
   )
 }
 
-ddr_data <- load_ddr_scores()
-ddr_load_error <- attr(ddr_data, "load_error")
-sample_data <- tryCatch(base_sample_data(ddr_data), error = function(err) {
-  ddr_load_error <<- conditionMessage(err)
-  copy(empty_base_sample_data)
-})
-display_data <- tryCatch(prepare_hrd_scores_data(ddr_data), error = function(err) {
-  ddr_load_error <<- conditionMessage(err)
-  empty_hrd_scores_data()
-})
+ddr_load <- load_or_empty(adapt_ddr_scores, data.table)
+ddr_data <- ddr_load$data
+
+ddr_load_error <- ddr_load$error
+sample_load <- load_or_empty(function() base_sample_data(ddr_data), function() copy(empty_base_sample_data))
+sample_data <- sample_load$data
+if (is.null(ddr_load_error)) {
+  ddr_load_error <- sample_load$error
+}
+
+display_load <- load_or_empty(function() prepare_hrd_scores_data(ddr_data), empty_hrd_scores_data)
+display_data <- display_load$data
+if (is.null(ddr_load_error)) {
+  ddr_load_error <- display_load$error
+}
+
 cancer_counts <- if (nrow(sample_data)) sample_data[, .N, by = cancer_type] else data.table(cancer_type = character(), N = integer())
 
 has_sample_data <- nrow(sample_data) > 0
