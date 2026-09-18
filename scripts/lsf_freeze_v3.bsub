@@ -1,0 +1,101 @@
+#!/bin/bash
+#BSUB -J kids26_freeze_v3
+#BSUB -q priority
+#BSUB -n 4
+#BSUB -R "span[hosts=1] rusage[mem=60GB]"
+#BSUB -M 240GB
+#BSUB -W 8:00
+#BSUB -o logs/freeze_v3_%J.out
+#BSUB -e logs/freeze_v3_%J.err
+# =============================================================================
+# KIDS26 Team 12 - FREEZE THE V3-abs VARIANT (single job, not an array).
+# =============================================================================
+#
+# WHAT THIS RUNS
+#   scripts/freeze_final_model.R with feature_rank="within_tissue" (V3-abs):
+#   ONE elastic-net fit on ALL development samples across the 30 non-CNS cancer
+#   types, plus a split-conformal interval from a stratified 20% calibration
+#   reservation, frozen to results/frozen_v3_2026-09-18/frozen_nonCNS.rds.
+#
+#   This makes V3-abs a CANDIDATE artefact for scoring the locked GBM/LGG
+#   cohort. It does not make it the shipping model - that decision belongs to
+#   the full 30-fold V3-abs LOCO run (scripts/lsf_v3_full_array.bsub,
+#   results/v3_loco_full) once loco_merge.R has run.
+#
+# RELATIONSHIP TO scripts/lsf_freeze.bsub
+#   Same script, same resources, same seed, same lock, same C2 clip rule. The
+#   ONLY differences are feature_rank and the output directory:
+#       lsf_freeze.bsub      pooled        -> results/frozen_2026-09-18
+#       lsf_freeze_v3.bsub   within_tissue -> results/frozen_v3_2026-09-18
+#   The separate out_dir is mandatory: two variants must never overwrite each
+#   other's frozen_nonCNS.rds, and freeze_manifest.tsv records feature_rank so
+#   the two bundles can always be told apart from disk.
+#
+# THE LOCK
+#   Unchanged and not weakened by the ranking swap. GBM + LGG (642 rows) are
+#   excluded from fitting, preprocessing, feature selection, hyperparameter
+#   selection AND conformal calibration; the script hard-stops via
+#   assert_partition_matches_cns() plus an explicit post-split leak assertion
+#   before glmnet is called. Their HRDsum is never read. This job does not score,
+#   so no --locked-evaluation opt-in exists here.
+#
+# RESOURCES - identical to lsf_freeze.bsub, which is a measured configuration
+#   *** rusage[mem] ON THIS CLUSTER IS PER SLOT, NOT PER JOB. ***
+#   60 GB x 4 slots = 240 GB reserved, matching -M. The measured peak for an
+#   equivalent single fit was 173 GB (job 323075937), ~39% headroom. Do not raise
+#   -n without lowering rusage[mem] to match, or the job sits PENDING forever and
+#   it looks like a busy queue.
+#
+#   -W 8:00 is generous on purpose; expect roughly 60-90 min.
+#
+# QUEUE CHOICE - priority, NOT biohackathon
+#   biohackathon has only ~2 usable nodes. priority maps to rhel8_rome: 46 nodes
+#   at 1,003 GB and 14 at 1.9 TB, so a 240 GB job places immediately.
+#
+# SUBMIT
+#   bsub < scripts/lsf_freeze_v3.bsub
+#
+# MONITOR
+#   bjobs -w
+#   tail -f logs/freeze_v3_<JOBID>.out
+#
+# AFTER IT COMPLETES
+#   Check results/frozen_v3_2026-09-18/freeze_manifest.tsv and confirm
+#   feature_rank reads within_tissue (if it reads pooled, the argument did not
+#   reach the script and this is a duplicate of the other bundle). Then check
+#   artifact_sha256, n_nonzero_coefficients and conformal_q, and confirm
+#   final_partitions.tsv shows 642 rows in role locked_CNS and zero anywhere
+#   else.
+# =============================================================================
+
+set -euo pipefail
+
+REPO=/research/groups/shelagrp/home/esavage/KIDS26/KIDS26-Team12
+BETA=data/processed/beta.tsv
+META=data/processed/master_samples.tsv
+OUT=results/frozen_v3_2026-09-18
+FEATURE_RANK=within_tissue
+
+cd "$REPO"
+mkdir -p logs "$OUT"
+
+echo "=== v3 freeze job ${LSB_JOBID:-local} on $(hostname) ==="
+echo "started: $(date)"
+echo "git commit: $(git rev-parse HEAD)"
+echo "feature_rank: ${FEATURE_RANK}"
+free -g | head -2
+echo
+
+# Pin thread counts to the slots LSF granted, so R's BLAS does not spawn one
+# thread per physical core (up to 128 on some rome nodes) and oversubscribe.
+export OMP_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export OPENBLAS_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+export MKL_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+
+# No --allow-fixture. The provenance gate MUST be able to stop this job: a
+# fixture bundle would be schema-identical to the real artefact.
+Rscript scripts/freeze_final_model.R "$BETA" "$META" "$OUT" "$FEATURE_RANK"
+
+echo
+echo "finished: $(date)"
+ls -la "$OUT"

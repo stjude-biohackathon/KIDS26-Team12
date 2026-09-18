@@ -23,8 +23,10 @@
 #   run 01's folds are different fits (they each drop one tissue; this one drops
 #   the calibration reservation). macro_metrics.txt does not describe this .rds.
 #
-# ARCHITECTURE - frozen, matches run 01 exactly
-#   feature_rank    = "pooled"     (V3-abs / within_tissue is NOT being frozen)
+# ARCHITECTURE - frozen, matches run 01 exactly by default
+#   feature_rank    = "pooled"     (DEFAULT; pass "within_tissue" as the 4th
+#                                   argument to freeze the V3-abs variant into
+#                                   its own out_dir instead)
 #   target at fit   = identity     (no log1p; REJECTED on the full 30-fold run)
 #   target at score = clip         (C2 ADOPTED: pmax(pred, 0))
 #   inner folds     = one per TRAINING cancer type (cross-tissue tuning rule)
@@ -48,7 +50,19 @@
 #        comment.
 #
 # USAGE
-#   Rscript scripts/freeze_final_model.R <beta.tsv> <master.tsv> <out_dir> [--allow-fixture]
+#   Rscript scripts/freeze_final_model.R <beta.tsv> <master.tsv> [out_dir] [feature_rank] [--allow-fixture]
+#
+#   out_dir      optional, defaults to results/frozen_2026-09-18 (the pooled
+#                shipping artefact's directory).
+#   feature_rank optional, defaults to "pooled". Set to "within_tissue" to
+#                freeze the V3-abs variant; it is threaded into fit_en() and
+#                recorded in freeze_manifest.tsv. ALWAYS freeze a non-default
+#                feature_rank into its OWN out_dir - two variants must never
+#                overwrite each other's frozen_nonCNS.rds.
+#
+#   Both defaults reproduce the historical 3-argument invocation exactly, so
+#   `Rscript scripts/freeze_final_model.R beta.tsv master.tsv results/frozen_2026-09-18`
+#   behaves byte-for-byte as before this file was parameterised.
 #
 #   Run from the repository root: source("R/model.R") is a relative path.
 #   --allow-fixture is for the synthetic dry run ONLY. It downgrades the
@@ -68,10 +82,18 @@ t_start <- Sys.time()
 args <- commandArgs(trailingOnly = TRUE)
 allow_fixture <- "--allow-fixture" %in% args
 args <- args[args != "--allow-fixture"]
-if (length(args) != 3) {
-  stop("Usage: Rscript scripts/freeze_final_model.R <beta.tsv> <master.tsv> <out_dir> [--allow-fixture]")
+if (length(args) < 2 || length(args) > 4) {
+  stop("Usage: Rscript scripts/freeze_final_model.R <beta.tsv> <master.tsv> [out_dir] [feature_rank] [--allow-fixture]")
 }
-beta_path <- args[1]; meta_path <- args[2]; out <- args[3]
+beta_path <- args[1]; meta_path <- args[2]
+# Defaults chosen so the historical 3-argument call is unchanged in effect.
+out          <- if (length(args) >= 3 && nzchar(args[3])) args[3] else "results/frozen_2026-09-18"
+FEATURE_RANK <- if (length(args) >= 4 && nzchar(args[4])) args[4] else "pooled"
+# Same vocabulary fit_en()/loco_one_fold.R accept. Fail here, before an hour of
+# compute, rather than inside glmnet.
+if (!FEATURE_RANK %in% c("pooled", "within_tissue", "lineage_penalized")) {
+  stop("feature_rank must be 'pooled', 'within_tissue' or 'lineage_penalized'")
+}
 
 cat("=============================================================\n")
 cat("KIDS26 Team 12 - FREEZE THE SHIPPING MODEL\n")
@@ -81,6 +103,7 @@ cat("started    :", format(t_start), "\n")
 cat("beta       :", beta_path, "\n")
 cat("master     :", meta_path, "\n")
 cat("out_dir    :", out, "\n")
+cat("feature_rank:", FEATURE_RANK, "\n")
 cat("fixture ok :", allow_fixture, "\n\n")
 
 source("R/model.R")
@@ -94,7 +117,9 @@ if (!requireNamespace("data.table", quietly = TRUE)) stop("Install dependencies 
 if (!requireNamespace("glmnet", quietly = TRUE)) stop("Install glmnet via scripts/setup.R")
 
 SEED         <- 260910L
-FEATURE_RANK <- "pooled"
+# FEATURE_RANK is set from the CLI above (default "pooled" = run 01 / the
+# shipping artefact). It is threaded into fit_en() at THE FIT below, asserted
+# back off the bundle, and written to freeze_manifest.tsv.
 # THE C2 FIELD ---------------------------------------------------------------
 # scripts/predict_frozen.R line 299 reads:
 #     bundle_transform<-if(is.null(b$target_transform))"clip" else b$target_transform
