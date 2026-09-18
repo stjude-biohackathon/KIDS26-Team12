@@ -84,22 +84,19 @@ gate<-gate_matrix_provenance(matrix_pr,allow_fixture=allow_fixture)
 b<-readRDS(args[1]);d<-data.table::fread(args[2],data.table=FALSE,check.names=FALSE)
 if(anyDuplicated(d[[1]]))stop("Duplicate probes")
 
-# --- PROVENANCE GATE: refuse to score engineering fixtures -------------------
-prov_file <- paste0(tools::file_path_sans_ext(args[2]), ".provenance.json")
-if (!file.exists(prov_file)) {
-  stop("PROVENANCE GATE FAILED: No .provenance.json sidecar found for ",args[2],
-       "\nEvery beta matrix must have a .provenance.json file recording its origin.")
-}
-prov <- jsonlite::fromJSON(prov_file)
-# engineering_only=true means this is a smoke test / synthetic fixture
-# Allow it only if user explicitly passes --allow-fixture flag
-if (isTRUE(prov$engineering_only)) {
-  if (!any(grepl("--allow-fixture", args))) {
-    stop("PROVENANCE GATE BLOCKED: Matrix is marked engineering_only=true.\n",
-         "This is a test fixture, not real patient data.\n",
-         "To override: Rscript scripts/predict_frozen.R ... --allow-fixture")
-  }
-}
+# NOTE (merge 2026-09-17): a second, independently written provenance gate was
+# added here in commit a6de701. It has been removed rather than kept alongside
+# the R/provenance.R gate above, for three reasons:
+#   1. It was UNREACHABLE. gate_matrix_provenance() runs before the matrix is
+#      read and stops on the same conditions, so this block never executed.
+#   2. It ran AFTER fread(), so on an unlabelled 28 GB matrix it would have
+#      loaded the whole file before refusing it.
+#   3. It checked only engineering_only, missing the no-allowlist-hash case,
+#      and it did not stamp the output - so a fixture scored under
+#      --allow-fixture would still have produced a clean-looking results table.
+# The two path conventions were verified to agree before removal:
+#   sub("\\.[^.]+$", ...) and tools::file_path_sans_ext() both map
+#   data/processed/beta.tsv -> data/processed/beta.provenance.json
 # Did this matrix come off the same probe allowlist the model was trained on?
 # Non-fatal by design (see R/provenance.R): cross-platform transfer is the point
 # of the project, and features align by name. But it is recorded per row.
