@@ -1,5 +1,11 @@
 # 24 — Results: LOCO run 01 (2026-09-17)
 
+> **Status note added 2026-09-18.** This document is the historical record of
+> LOCO run 01 and is unchanged below. Run 01 has since been **superseded as the
+> shipped model by V3-abs**, and the locked CNS partition described as "still
+> unopened" below **was opened on 2026-09-18**. See the UPDATE section at the
+> end of this file before quoting anything here.
+
 **Run.** LSF array `323078995`, 30/30 folds DONE, merged 06:20 CDT by
 `scripts/watch_loco_array.sh`. Development cohort n = 7,065 across 30 non-CNS
 cancer types. Locked CNS partition (GBM+LGG, 642 samples) **still unopened.**
@@ -161,3 +167,92 @@ All numbers from `results/loco_run01/`, array `323078995`, commit `696e05e`
 plus this run's outputs. Matrix `data/processed/beta.tsv`
 (sha256 `e3642d30…`, `engineering_only: false`), 336,480 probes × 7,707 samples.
 Per-fold artefacts in `results/loco_run01/folds/` (30 × 5 files).
+
+---
+
+# UPDATE 2026-09-18 — run 01 is SUPERSEDED as the shipped model
+
+**Everything above §7 is unchanged and remains the correct record of LOCO run
+01.** Nothing in it has been retracted. This section records only what happened
+afterwards, so a reader arriving at this file does not mistake run 01 for the
+project's final model.
+
+## S1. Run 01 is now Candidate A, the sensitivity analysis
+
+The shipped model is **V3-abs**: this same absolute-target LOCO model with
+**exactly one change** — the 5,000-probe unsupervised filter ranks probes by
+pooled **within-tissue** variance computed on training-fold rows only, rather
+than pooled total variance. Pre-registered in
+`docs/27_V3_PREREGISTRATION.md` §3 before any V3 output existed; it passed 7 of
+7 sentinel gates (job `323220006`) and 7 of 7 full-30-fold selection criteria
+S1–S7 (array `323242800`, scored under the rule frozen in
+`docs/28_CANDIDATE_SELECTION_AND_CNS_PROTOCOL.md` §4).
+
+That rule was written against §3 of this document. §3 asked how much of the
+model is just tissue identity and answered R² = 0.562 of the prediction against
+0.341 of the truth. V3-abs attacks precisely that excess.
+
+## S2. What changed, and what did not
+
+Head-to-head on all 30 development folds: **`results/tables/tableA2_A_vs_V3_full30.md`**
+(macro estimator under adopted C2 clipping, seed 5813, 10,000 bootstrap
+replicates). Note that macro estimator is *not* the pooled-within estimator that
+produced the headline 0.612 in §1; the two must not be quoted side by side.
+
+| Quantity | Run 01 (A) | V3-abs | Reading |
+|---|---|---|---|
+| Tissue R² of **predictions** | 0.5584 | **0.4672** | against 0.3414 for the truth |
+| Excess tissue R² (pred − truth) | 0.2171 | **0.1258** | `ΔR²_excess = 0.0913` [0.0824, 0.0996], p < 0.0001 |
+| Fraction of excess lineage structure removed | — | **42.0%** | CI 37.9–46.5% |
+| Mean absolute tissue bias (C1) | 3.4628 | **2.9737** | §2's 3.46 units, reduced not resolved |
+| Pooled MAE | 8.9717 | **8.4456** | — |
+| Macro skill vs oracle tissue-mean null | 0.4192 | **0.6304** | — |
+| Macro within-tissue Pearson | 0.5197 | 0.5036 | paired mean −0.0161, CI [−0.0410, 0.0051], **p = 0.428** |
+| Macro within-tissue Spearman | 0.4747 | 0.4472 | paired mean −0.0275, **p = 0.477** |
+| Tissues with positive within-tissue r | 29 of 30 | 29 of 30 | — |
+
+Only 12 of 30 tissues improved on Pearson and 14 of 30 on Spearman, and the
+paired difference is not significant either way. **V3-abs is a targeted lineage
+reduction at no measurable ranking cost — it is not a general accuracy
+improvement**, and §6's required change 1 (report as a within-tissue relative
+ranker) still stands unaltered.
+
+Shipped artifact: `results/frozen_v3_2026-09-18/frozen_nonCNS.rds`, sha256
+`df9f7e82b0b371b81ecca6a1d99a1a50128a95e78daa63307d5f3b0633a4aa72`, alpha 0.1,
+lambda 1.3598, 905 non-zero coefficients, 95% conformal q = 21.10. Run 01 was
+frozen alongside it as the pre-declared sensitivity candidate,
+`results/frozen_2026-09-18/frozen_nonCNS.rds`, sha256 `0e975cd6…`, alpha 0.1,
+lambda 1.4201, 774 non-zero, conformal q = 21.73.
+
+## S3. The §6 gate logic was corrected, not satisfied
+
+§6 item 6 said "keep the CNS lock closed until 1–4 are done." `docs/27` §2
+records that this was **circular**: it required zero-shot calibration to be
+proven before running the only experiment able to measure zero-shot calibration
+in an untouched lineage. The gate was split into a DEPLOYMENT gate (still shut)
+and an EXTERNAL-EVALUATION gate (satisfied 2026-09-18). C1 was reclassified from
+a precondition into a finding to be tested on CNS. C3, the purity inversion of
+§5, remains unresolved.
+
+## S4. The CNS result
+
+The locked partition was opened **exactly once**, 2026-09-18, LSF `323264626`,
+642 samples (135 GBM, 507 LGG), ledger row in
+`results/LOCKED_EVALUATION_LEDGER.tsv`. Primary (V3-abs): GBM r = 0.320
+[0.173, 0.461], MAE 8.86, bias +7.99; LGG r = 0.329 [0.234, 0.421], MAE 5.13,
+bias +1.62. The **oracle** within-lineage tissue-mean null beats the model in
+both (skill −1.009 GBM, −0.048 LGG). Rank transfers weakly; absolute
+cross-lineage calibration does not. **The 42% lineage reduction measured on the
+source tissues did not translate into better CNS calibration.**
+
+Full result: `results/cns_eval_2026-09-18/analysis_v3/cns_analysis_summary.md`
+(primary) and `analysis_A/` (sensitivity); protocol `docs/28` §6–7; pre-unlock
+audit `docs/29_PRE_UNLOCK_RECORD.md`.
+
+## S5. Also recorded: V4 failed
+
+A fourth variant, V4 lineage-penalized, was sentinelled (job `323241956`) and
+**failed the mechanism gate G3**: tissue R² of the predictions rose
+0.5219 → 0.5361 against a ceiling of 0.4919, while passing the other six gates.
+The branch was terminated. Scorecard: `results/v4_sentinel/gate_scorecard.tsv`.
+
